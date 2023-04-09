@@ -42,6 +42,7 @@ from filelock import FileLock
 from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+import gc
 
 import transformers
 from transformers import (
@@ -145,7 +146,7 @@ def parse_args():
     parser.add_argument(
         "--num_beams",
         type=int,
-        default=None,
+        default=1,
         help=(
             "Number of beams to use for evaluation. This argument will be "
             "passed to ``model.generate``, which is used during ``evaluate`` and ``predict``."
@@ -312,6 +313,39 @@ def save_state_dict(state_dict, output_dir, filename):
     for k in state_dict:
         state_dict[k] = state_dict[k].to(torch.float16).cpu()
     torch.save(state_dict, os.path.join(output_dir, filename))
+    
+class Preprocess:
+    def __init__(self, text_column, summary_column, prefix, tokenizer, args):
+        self.text_column = text_column
+        self.summary_column = summary_column
+        self.prefix = prefix
+        self.tokenizer = tokenizer
+        self.args = args
+        self.padding = "max_length" if args.pad_to_max_length else False
+    def __call__(self, examples):
+        text_column = self.text_column
+        summary_column = self.summary_column
+        prefix = self.prefix
+        tokenizer = self.tokenizer
+        args = self.args
+        padding = self.padding
+        inputs = examples[text_column]
+        targets = examples[summary_column]
+        inputs = [prefix + inp for inp in inputs]
+        model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
+
+        # Tokenize targets with the `text_target` keyword argument
+        labels = tokenizer(text_target=targets, max_length=args.max_target_length, padding=padding, truncation=True)
+
+        # If we are padding here, replace all tokenizer.pad_token_id in the labels by -100 when we want to ignore
+        # padding in the loss.
+        if padding == "max_length" and args.ignore_pad_token_for_loss:
+            labels["input_ids"] = [
+                [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
+            ]
+
+        model_inputs["labels"] = labels["input_ids"]
+        return model_inputs
 
 
 def main():
@@ -459,25 +493,26 @@ def main():
     # Temporarily set max_target_length for training.
     max_target_length = args.max_target_length
     padding = "max_length" if args.pad_to_max_length else False
+    preprocess_function = Preprocess(text_column, summary_column, prefix, tokenizer, args)
 
-    def preprocess_function(examples):
-        inputs = examples[text_column]
-        targets = examples[summary_column]
-        inputs = [prefix + inp for inp in inputs]
-        model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
+#     def preprocess_function(examples):
+#         inputs = examples[text_column]
+#         targets = examples[summary_column]
+#         inputs = [prefix + inp for inp in inputs]
+#         model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
 
-        # Tokenize targets with the `text_target` keyword argument
-        labels = tokenizer(text_target=targets, max_length=max_target_length, padding=padding, truncation=True)
+#         # Tokenize targets with the `text_target` keyword argument
+#         labels = tokenizer(text_target=targets, max_length=max_target_length, padding=padding, truncation=True)
 
-        # If we are padding here, replace all tokenizer.pad_token_id in the labels by -100 when we want to ignore
-        # padding in the loss.
-        if padding == "max_length" and args.ignore_pad_token_for_loss:
-            labels["input_ids"] = [
-                [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
-            ]
+#         # If we are padding here, replace all tokenizer.pad_token_id in the labels by -100 when we want to ignore
+#         # padding in the loss.
+#         if padding == "max_length" and args.ignore_pad_token_for_loss:
+#             labels["input_ids"] = [
+#                 [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
+#             ]
 
-        model_inputs["labels"] = labels["input_ids"]
-        return model_inputs
+#         model_inputs["labels"] = labels["input_ids"]
+#         return model_inputs
 
     with accelerator.main_process_first():
         train_dataset = raw_datasets["train"].map(

@@ -1,6 +1,6 @@
 # l25
 MODEL="t5-small"
-bs=2
+bs=8
 dataset="samsum"
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
