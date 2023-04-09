@@ -51,7 +51,7 @@ from transformers import (
     SchedulerType,
     get_scheduler,
 )
-from transformers.utils import check_min_version, get_full_repo_name, is_offline_mode, send_example_telemetry
+from transformers.utils import check_min_version, get_full_repo_name
 from transformers.utils.versions import require_version
 
 
@@ -68,10 +68,6 @@ MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 try:
     nltk.data.find("tokenizers/punkt")
 except (LookupError, OSError):
-    if is_offline_mode():
-        raise LookupError(
-            "Offline mode: run this script without TRANSFORMERS_OFFLINE first to download nltk data files"
-        )
     with FileLock(".lock") as lock:
         nltk.download("punkt", quiet=True)
 
@@ -134,7 +130,7 @@ def parse_args():
     parser.add_argument(
         "--preprocessing_num_workers",
         type=int,
-        default=None,
+        default=32,
         help="The number of processes to use for the preprocessing.",
     )
     parser.add_argument(
@@ -143,22 +139,11 @@ def parse_args():
     parser.add_argument(
         "--max_target_length",
         type=int,
-        default=128,
+        default=256,
         help=(
             "The maximum total sequence length for target text after "
             "tokenization. Sequences longer than this will be truncated, sequences shorter will be padded."
             "during ``evaluate`` and ``predict``."
-        ),
-    )
-    parser.add_argument(
-        "--val_max_target_length",
-        type=int,
-        default=None,
-        help=(
-            "The maximum total sequence length for validation "
-            "target text after tokenization.Sequences longer than this will be truncated, sequences shorter will be "
-            "padded. Will default to `max_target_length`.This argument is also used to override the ``max_length`` "
-            "param of ``model.generate``, which is used during ``evaluate`` and ``predict``."
         ),
     )
     parser.add_argument(
@@ -314,9 +299,6 @@ def parse_args():
 
 def main():
     args = parse_args()
-    # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
-    # information sent is the one passed as arguments along with your Python/PyTorch versions.
-    send_example_telemetry("run_summarization_no_trainer", args)
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
@@ -464,8 +446,6 @@ def main():
                 f"--summary_column' value '{args.summary_column}' needs to be one of: {', '.join(column_names)}"
             )
 
-    if args.val_max_target_length is None:
-        args.val_max_target_length = args.max_target_length
 
     # Temporarily set max_target_length for training.
     max_target_length = args.max_target_length
@@ -501,7 +481,7 @@ def main():
         )
 
         # Temporarily set max_target_length for validation.
-        max_target_length = args.val_max_target_length
+        max_target_length = args.max_target_length
         eval_dataset = raw_datasets["validation"].map(
             preprocess_function,
             batched=True,
@@ -671,7 +651,7 @@ def main():
         model.eval()
 
         gen_kwargs = {
-            "max_length": args.val_max_target_length,
+            "max_length": args.max_target_length,
             "num_beams": args.num_beams,
         }
         for step, batch in enumerate(eval_dataloader):
