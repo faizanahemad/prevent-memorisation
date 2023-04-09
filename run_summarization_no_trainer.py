@@ -675,7 +675,8 @@ def main():
                 outputs = model(**batch)
                 loss = outputs.loss
                 # We keep track of the loss at each epoch
-                total_loss += loss.detach().float()
+                loss_record = loss.detach().float()
+                total_loss += loss_record
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
@@ -683,6 +684,7 @@ def main():
                 if not accelerator.optimizer_step_was_skipped:
                     lr_scheduler.step()
                 optimizer.zero_grad()
+                progress_bar.set_description(f"Epoch {epoch} - Completed Step {completed_steps}, step {step} - LR: {optimizer.param_groups[0]['lr']:.2e} - loss: {loss_record:.4f}")  
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
