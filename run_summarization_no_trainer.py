@@ -25,6 +25,7 @@ import math
 import os
 import random
 from pathlib import Path
+import sys
 
 import datasets
 import evaluate
@@ -32,6 +33,8 @@ import nltk
 import numpy as np
 import torch
 from accelerate import Accelerator
+from accelerate import DistributedDataParallelKwargs
+from accelerate.utils import DummyOptim, DummyScheduler
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from datasets import load_dataset
@@ -51,19 +54,12 @@ from transformers import (
     SchedulerType,
     get_scheduler,
 )
-from transformers.utils import check_min_version, get_full_repo_name
 from transformers.utils.versions import require_version
 
-
-# Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-check_min_version("4.28.0.dev0")
 
 logger = get_logger(__name__)
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/summarization/requirements.txt")
 
-# You should update this to your particular problem to have better documentation of `model_type`
-MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
-MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 try:
     nltk.data.find("tokenizers/punkt")
@@ -213,6 +209,12 @@ def parse_args():
         default=5e-5,
         help="Initial learning rate (after the potential warmup period) to use.",
     )
+    parser.add_argument(
+        '--max_grad_norm',
+        type=float,
+        default=1.0,
+        help='Max gradient norm.'
+    )
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
     parser.add_argument("--num_train_epochs", type=int, default=3, help="Total number of training epochs to perform.")
     parser.add_argument(
@@ -237,20 +239,8 @@ def parse_args():
     parser.add_argument(
         "--num_warmup_steps", type=int, default=0, help="Number of steps for the warmup in the lr scheduler."
     )
-    parser.add_argument("--output_dir", type=str, default=None, help="Where to store the final model.")
+    parser.add_argument("--output_dir", type=str, required=True, help="Where to store the final model.")
     parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
-    parser.add_argument(
-        "--model_type",
-        type=str,
-        default=None,
-        help="Model type to use if training from scratch.",
-        choices=MODEL_TYPES,
-    )
-    parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
-    parser.add_argument(
-        "--hub_model_id", type=str, help="The name of the repository to keep in sync with the local `output_dir`."
-    )
-    parser.add_argument("--hub_token", type=str, help="The token to use to push to the Model Hub.")
     parser.add_argument(
         "--checkpointing_steps",
         type=str,
@@ -263,11 +253,7 @@ def parse_args():
         default=None,
         help="If the training should continue from a checkpoint folder.",
     )
-    parser.add_argument(
-        "--with_tracking",
-        action="store_true",
-        help="Whether to enable experiment trackers for logging.",
-    )
+    
     parser.add_argument(
         "--report_to",
         type=str,
@@ -275,8 +261,37 @@ def parse_args():
         help=(
             'The integration to report the results and logs to. Supported platforms are `"tensorboard"`,'
             ' `"wandb"`, `"comet_ml"` and `"clearml"`. Use `"all"` (default) to report to all integrations.'
-            "Only applicable when `--with_tracking` is passed."
+            
         ),
+    )
+    parser.add_argument(
+        '--use_lora',
+        action='store_true',
+    )
+    parser.add_argument(
+        '--lora_rank',
+        type=int,
+        default=4,
+        help='Rank of the LoRA matrix',
+    )
+
+    parser.add_argument(
+        '--lora_alpha',
+        type=float,
+        default=32,
+        help='Alpha of the LoRA matrix',
+    )
+    parser.add_argument(
+        '--load_model',
+        type=str,
+        default=None,
+        help='Path to the model state dict'
+    )
+    parser.add_argument(
+        '--save_model',
+        type=str,
+        default="model.pt",
+        help='Path to the model state dict for saving'
     )
     args = parser.parse_args()
 
@@ -291,10 +306,12 @@ def parse_args():
             extension = args.validation_file.split(".")[-1]
             assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
 
-    if args.push_to_hub:
-        assert args.output_dir is not None, "Need an `output_dir` to create a repo when `--push_to_hub` is passed."
-
     return args
+
+def save_state_dict(state_dict, output_dir, filename):
+    for k in state_dict:
+        state_dict[k] = state_dict[k].to(torch.float16).cpu()
+    torch.save(state_dict, os.path.join(output_dir, filename))
 
 
 def main():
@@ -304,12 +321,25 @@ def main():
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
     # in the environment
     accelerator_log_kwargs = {}
+    accelerator_log_kwargs["log_with"] = args.report_to
+    accelerator_log_kwargs["project_dir"] = args.output_dir
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
 
-    if args.with_tracking:
-        accelerator_log_kwargs["log_with"] = args.report_to
-        accelerator_log_kwargs["logging_dir"] = args.output_dir
-
-    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, **accelerator_log_kwargs)
+    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, kwargs_handlers=[ddp_kwargs], **accelerator_log_kwargs)
+    if accelerator.is_main_process:
+        os.makedirs(args.output_dir, exist_ok=True)
+        os.makedirs(os.path.join(args.output_dir, args.model_name_or_path, args.dataset_name), exist_ok=True)
+    # Make one log on every process with the configuration for debugging.
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(os.path.join(args.output_dir, "log.txt"))
+        ] if accelerator.is_main_process else []
+    )
+    logger.info(accelerator.state, main_process_only=False)
     if args.source_prefix is None and args.model_name_or_path in [
         "t5-small",
         "t5-base",
@@ -321,16 +351,10 @@ def main():
             "You're running a t5 model but didn't provide a source prefix, which is the expected, e.g. with "
             "`--source_prefix 'summarize: ' `"
         )
-    # Make one log on every process with the configuration for debugging.
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-        datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO,
-    )
-    logger.info(accelerator.state, main_process_only=False)
+    
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
-        transformers.utils.logging.set_verbosity_info()
+        transformers.utils.logging.set_verbosity_warning()
     else:
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
@@ -339,23 +363,8 @@ def main():
     if args.seed is not None:
         set_seed(args.seed)
 
-    # Handle the repository creation
-    if accelerator.is_main_process:
-        if args.push_to_hub:
-            if args.hub_model_id is None:
-                repo_name = get_full_repo_name(Path(args.output_dir).name, token=args.hub_token)
-            else:
-                repo_name = args.hub_model_id
-            create_repo(repo_name, exist_ok=True, token=args.hub_token)
-            repo = Repository(args.output_dir, clone_from=repo_name, token=args.hub_token)
-
-            with open(os.path.join(args.output_dir, ".gitignore"), "w+") as gitignore:
-                if "step_*" not in gitignore:
-                    gitignore.write("step_*\n")
-                if "epoch_*" not in gitignore:
-                    gitignore.write("epoch_*\n")
-        elif args.output_dir is not None:
-            os.makedirs(args.output_dir, exist_ok=True)
+    
+    
     accelerator.wait_for_everyone()
 
     # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
@@ -389,10 +398,7 @@ def main():
         config = AutoConfig.from_pretrained(args.config_name)
     elif args.model_name_or_path:
         config = AutoConfig.from_pretrained(args.model_name_or_path)
-    else:
-        config = CONFIG_MAPPING[args.model_type]()
-        logger.warning("You are instantiating a new config instance from scratch.")
-
+    
     if args.tokenizer_name:
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name, use_fast=not args.use_slow_tokenizer)
     elif args.model_name_or_path:
@@ -407,7 +413,7 @@ def main():
         model = AutoModelForSeq2SeqLM.from_pretrained(
             args.model_name_or_path,
             from_tf=bool(".ckpt" in args.model_name_or_path),
-            config=config,
+            config=config, # torch_dtype=torch.float16
         )
     else:
         logger.info("Training new model from scratch")
@@ -417,6 +423,7 @@ def main():
     # on a small vocab and want a smaller embedding size, remove this test.
     embedding_size = model.get_input_embeddings().weight.shape[0]
     if len(tokenizer) > embedding_size:
+        raise ValueError
         model.resize_token_embeddings(len(tokenizer))
     if model.config.decoder_start_token_id is None:
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
@@ -430,7 +437,8 @@ def main():
     # Get the column names for input/target.
     dataset_columns = summarization_name_mapping.get(args.dataset_name, None)
     if args.text_column is None:
-        text_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
+        assert dataset_columns is not None
+        text_column = dataset_columns[0]
     else:
         text_column = args.text_column
         if text_column not in column_names:
@@ -438,7 +446,8 @@ def main():
                 f"--text_column' value '{args.text_column}' needs to be one of: {', '.join(column_names)}"
             )
     if args.summary_column is None:
-        summary_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
+        assert dataset_columns is not None
+        summary_column = dataset_columns[1]
     else:
         summary_column = args.summary_column
         if summary_column not in column_names:
@@ -518,16 +527,23 @@ def main():
     )
     eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
 
+    trainable_params = sum(p.numel()
+                           for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel()
+                           for p in model.parameters())
+
+    logger.info(f"Number of trainable parameters: {(trainable_params/(1024*1024)):.2f} Million, Total Parameter = {(total_params/(1024*1024)):.2f} Million")
+    
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
     no_decay = ["bias", "LayerNorm.weight", "layer_norm.weight"]
     optimizer_grouped_parameters = [
         {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay) and p.requires_grad],
             "weight_decay": args.weight_decay,
         },
         {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay) and p.requires_grad],
             "weight_decay": 0.0,
         },
     ]
@@ -566,11 +582,10 @@ def main():
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
-    if args.with_tracking:
-        experiment_config = vars(args)
-        # TensorBoard cannot log Enums, need the raw value
-        experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
-        accelerator.init_trackers("summarization_no_trainer", experiment_config)
+    experiment_config = vars(args)
+    # TensorBoard cannot log Enums, need the raw value
+    experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
+    accelerator.init_trackers("summarization_no_trainer", experiment_config)
 
     # Metric
     metric = evaluate.load("rouge")
@@ -613,8 +628,7 @@ def main():
 
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
-        if args.with_tracking:
-            total_loss = 0
+        total_loss = 0
         for step, batch in enumerate(train_dataloader):
             # We need to skip steps until we reach the resumed step
             if args.resume_from_checkpoint and epoch == starting_epoch:
@@ -626,11 +640,13 @@ def main():
                 outputs = model(**batch)
                 loss = outputs.loss
                 # We keep track of the loss at each epoch
-                if args.with_tracking:
-                    total_loss += loss.detach().float()
+                total_loss += loss.detach().float()
                 accelerator.backward(loss)
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                 optimizer.step()
-                lr_scheduler.step()
+                if not accelerator.optimizer_step_was_skipped:
+                    lr_scheduler.step()
                 optimizer.zero_grad()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
@@ -641,9 +657,15 @@ def main():
             if isinstance(checkpointing_steps, int):
                 if completed_steps % checkpointing_steps == 0:
                     output_dir = f"step_{completed_steps }"
-                    if args.output_dir is not None:
-                        output_dir = os.path.join(args.output_dir, output_dir)
+                    output_dir = os.path.join(args.output_dir, output_dir)
                     accelerator.save_state(output_dir)
+                    if args.save_model:
+                        accelerator.wait_for_everyone()
+                        if accelerator.is_local_main_process:
+                            unwrapped_model = accelerator.unwrap_model(model)
+                            state_dict = unwrapped_model.state_dict()
+                            save_state_dict(
+                                state_dict, output_dir, args.save_model)
 
             if completed_steps >= args.max_train_steps:
                 break
@@ -692,44 +714,40 @@ def main():
 
         logger.info(result)
 
-        if args.with_tracking:
-            result["train_loss"] = total_loss.item() / len(train_dataloader)
-            result["epoch"] = epoch
-            result["step"] = completed_steps
-            accelerator.log(result, step=completed_steps)
-
-        if args.push_to_hub and epoch < args.num_train_epochs - 1:
-            accelerator.wait_for_everyone()
-            unwrapped_model = accelerator.unwrap_model(model)
-            unwrapped_model.save_pretrained(
-                args.output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
-            )
-            if accelerator.is_main_process:
-                tokenizer.save_pretrained(args.output_dir)
-                repo.push_to_hub(
-                    commit_message=f"Training in progress epoch {epoch}", blocking=False, auto_lfs_prune=True
-                )
+        
+        result["train_loss"] = total_loss.item() / len(train_dataloader)
+        result["epoch"] = epoch
+        result["step"] = completed_steps
+        accelerator.log(result, step=completed_steps)
 
         if args.checkpointing_steps == "epoch":
             output_dir = f"epoch_{epoch}"
-            if args.output_dir is not None:
-                output_dir = os.path.join(args.output_dir, output_dir)
+            output_dir = os.path.join(args.output_dir, output_dir)
             accelerator.save_state(output_dir)
+            if args.save_model:
+                accelerator.wait_for_everyone()
+                if accelerator.is_local_main_process:
+                    unwrapped_model = accelerator.unwrap_model(model)
+                    state_dict = unwrapped_model.state_dict()
+                    save_state_dict(
+                        state_dict, output_dir, args.save_model)
+        gc.collect()
+        torch.cuda.empty_cache()
 
-    if args.output_dir is not None:
-        accelerator.wait_for_everyone()
-        unwrapped_model = accelerator.unwrap_model(model)
-        unwrapped_model.save_pretrained(
-            args.output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
-        )
-        if accelerator.is_main_process:
-            tokenizer.save_pretrained(args.output_dir)
-            if args.push_to_hub:
-                repo.push_to_hub(commit_message="End of training", auto_lfs_prune=True)
-
-            all_results = {f"eval_{k}": v for k, v in result.items()}
-            with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
-                json.dump(all_results, f)
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    unwrapped_model.save_pretrained(
+        args.output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
+    )
+    if accelerator.is_local_main_process:
+        if args.save_model:
+            state_dict = unwrapped_model.state_dict()
+            save_state_dict(
+                state_dict, args.output_dir, args.save_model)
+        tokenizer.save_pretrained(args.output_dir)
+        all_results = {f"eval_{k}": v for k, v in result.items()}
+        with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
+            json.dump(all_results, f)
 
 
 if __name__ == "__main__":
