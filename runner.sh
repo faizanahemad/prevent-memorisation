@@ -1,9 +1,9 @@
 # l25
 MODEL="t5-small"
-bs=16
+bs=32
 dataset="samsum"
 max_grad_norm=1.0
-gradient_accumulation_steps=2
+gradient_accumulation_steps=4
 
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
@@ -11,7 +11,7 @@ export WANDB_MODE="dryrun"
 export WANDB_DISABLE_SERVICE=true
 
 CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
-    --mixed_precision=fp16 --multi_gpu\
+    --mixed_precision=fp16 --use_deepspeed --zero_stage 2 --offload_optimizer_device "cpu" --offload_param_device "cpu" --gradient_accumulation_steps $gradient_accumulation_steps --gradient_clipping $max_grad_norm \
     run_summarization_no_trainer.py \
     --model_name_or_path $MODEL \
     --dataset_name $dataset  \

@@ -564,11 +564,13 @@ def main():
         "t5-large",
         "t5-3b",
         "t5-11b",
+        "flan",
     ]:
         logger.warning(
             "You're running a t5 model but didn't provide a source prefix, which is the expected, e.g. with "
             "`--source_prefix 'summarize: ' `"
         )
+        args.source_prefix = 'summarize: '
     
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
@@ -623,7 +625,6 @@ def main():
     # on a small vocab and want a smaller embedding size, remove this test.
     embedding_size = model.get_input_embeddings().weight.shape[0]
     if len(tokenizer) > embedding_size:
-        raise ValueError
         model.resize_token_embeddings(len(tokenizer))
     if model.config.decoder_start_token_id is None:
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
@@ -748,6 +749,12 @@ def main():
             resume_step = int(training_difference.replace("step_", ""))
             starting_epoch = resume_step // len(train_dataloader)
             resume_step -= starting_epoch * len(train_dataloader)
+
+    model.eval()
+    result_train = evaluate_model(model, tokenizer, accelerator, train_dataloader, args, result_key="train")
+    result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, result_key=None)
+    result.update(result_train)
+    logger.info(f"Zero shot results = {result}")
 
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
