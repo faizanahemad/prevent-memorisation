@@ -813,17 +813,7 @@ def main():
 
             if isinstance(checkpointing_steps, int):
                 if completed_steps % checkpointing_steps == 0:
-                    output_dir = f"step_{completed_steps }"
-                    output_dir = os.path.join(args.output_dir, output_dir)
-                    accelerator.save_state(output_dir)
-                    if args.save_model:
-                        accelerator.wait_for_everyone()
-                        if accelerator.is_local_main_process:
-                            unwrapped_model = accelerator.unwrap_model(model)
-                            state_dict = unwrapped_model.state_dict()
-                            save_state_dict(
-                                state_dict, output_dir, args.save_model)
-
+                    save_model_and_state(args.save_model, accelerator, model, tokenizer, args.output_dir, sub_dir=f"step_{completed_steps}", fsdp=args.fsdp, result_dict=None)
             if completed_steps >= args.max_train_steps:
                 break
 
@@ -844,35 +834,13 @@ def main():
         accelerator.log(result, step=completed_steps)
 
         if args.checkpointing_steps == "epoch":
-            output_dir = f"epoch_{epoch}"
-            output_dir = os.path.join(args.output_dir, output_dir)
-            accelerator.save_state(output_dir)
-            if args.save_model:
-                accelerator.wait_for_everyone()
-                if accelerator.is_local_main_process:
-                    unwrapped_model = accelerator.unwrap_model(model)
-                    state_dict = unwrapped_model.state_dict()
-                    save_state_dict(
-                        state_dict, output_dir, args.save_model)
+            save_model_and_state(args.save_model, accelerator, model, tokenizer, args.output_dir, sub_dir=f"epoch_{epoch}", fsdp=args.fsdp, result_dict=None)
         gc.collect()
         torch.cuda.empty_cache()
 
     accelerator.wait_for_everyone()
     logger.info(" **** Finished Training ****")
-    unwrapped_model = accelerator.unwrap_model(model)
-    state_dict=get_state_dict(unwrapped_model, accelerator, args.fsdp)
-    unwrapped_model.save_pretrained(
-        args.output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save, state_dict=state_dict
-    )
-    logger.info(f"Saved unwrapped model using `save_pretrained` in {args.output_dir}")
-    if accelerator.is_local_main_process:
-        if args.save_model:
-            save_state_dict(state_dict, args.output_dir, args.save_model)
-        tokenizer.save_pretrained(args.output_dir)
-        all_results = {f"eval_{k}": v for k, v in result.items()}
-        with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
-            json.dump(all_results, f)
-    logger.info(f"Saved tokenizer and model state dict in {args.output_dir}")
+    save_model_and_state(args.save_model, accelerator, model, tokenizer, args.output_dir, sub_dir="", fsdp=args.fsdp, result_dict=result)
     accelerator.end_training()
 
 
@@ -885,6 +853,29 @@ def get_state_dict(unwrapped_model, accelerator, fsdp=False):
     else:
         return accelerator.get_state_dict(unwrapped_model)
     
+def save_model_and_state(save_model, accelerator, model, tokenizer, output_dir, sub_dir="", fsdp=False, result_dict=None):
+    accelerator.wait_for_everyone()
+    output_dir = os.path.join(output_dir, sub_dir) if isinstance(sub_dir, str) else output_dir
+    accelerator.save_state(output_dir)
+    logger.info(f"[save_model_and_state]: Saved Training state in {output_dir}")
+    unwrapped_model = accelerator.unwrap_model(model)
+    state_dict=get_state_dict(unwrapped_model, accelerator, fsdp)
+    if accelerator.is_local_main_process:
+        if save_model:
+            logger.info("[save_model_and_state]: Get state dict for saving..")
+            save_state_dict(state_dict, output_dir, save_model)
+            unwrapped_model.save_pretrained(
+                output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save, state_dict=state_dict
+            )
+            logger.info(f"[save_model_and_state]:Saved Model state in {os.path.join(output_dir, save_model)}")
+        if tokenizer is not None:
+            tokenizer.save_pretrained(output_dir)
+            logger.info(f"[save_model_and_state]: Saved Tokenizer state in {output_dir}")
+        if result_dict and isinstance(result_dict, dict):
+            all_results = {f"{k}": v for k, v in result_dict.items()}
+            with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
+                json.dump(all_results, f)
+            logger.info(f"[save_model_and_state]: Saved Final Results in {os.path.join(args.output_dir, 'all_results.json')}")
 
 if __name__ == "__main__":
     main()
