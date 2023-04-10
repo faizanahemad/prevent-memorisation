@@ -1,9 +1,10 @@
 # l25
 MODEL="t5-small"
-bs=8
+bs=32
 dataset="samsum"
 max_grad_norm=1.0
-gradient_accumulation_steps=4
+gradient_accumulation_steps=1
+epochs=2
 
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
@@ -11,8 +12,8 @@ export WANDB_MODE="dryrun"
 export WANDB_DISABLE_SERVICE=true
 
 CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
-    --mixed_precision=fp16 --multi_gpu\
-    run_summarization \
+    --mixed_precision=fp16 --use_fsdp --fsdp_offload_params false --fsdp_auto_wrap_policy "TRANSFORMER_BASED_WRAP" --fsdp_sharding_strategy 1 --fsdp_transformer_layer_cls_to_wrap "T5Block" --fsdp_backward_prefetch_policy "BACKWARD_PRE" --fsdp_state_dict_type "FULL_STATE_DICT" \
+    run_summarization.py \
     --model_name_or_path $MODEL \
     --dataset_name $dataset  \
     --pad_to_max_length \
@@ -24,10 +25,10 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --weight_decay 0.1 \
     --num_warmup_steps 2000 \
     --lr_scheduler_type cosine \
-    --num_train_epochs 10 \
+    --num_train_epochs $epochs \
     --report_to wandb \
     --output_dir outputs/${MODEL}/${dataset} \
-    --zero_shot_evaluation\
+    --fsdp\
     --max_source_length 512 --max_target_length 128\
     --seed 42
     
@@ -38,8 +39,17 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
 # --zero_shot_evaluation
 # --gradient_checkpointing_enable
 
+### FSDP details
 # --use_fsdp --fsdp_offload_params true --fsdp_auto_wrap_policy "TRANSFORMER_BASED_WRAP" --fsdp_sharding_strategy 1 --fsdp_transformer_layer_cls_to_wrap "T5Block" --fsdp_backward_prefetch_policy "BACKWARD_PRE" --fsdp_state_dict_type "FULL_STATE_DICT"
 # --use_fsdp --fsdp_offload_params true --fsdp_auto_wrap_policy "TRANSFORMER_BASED_WRAP" --fsdp_sharding_strategy 2 --fsdp_transformer_layer_cls_to_wrap "T5Block" --fsdp_backward_prefetch_policy "BACKWARD_PRE" --fsdp_state_dict_type "FULL_STATE_DICT"
 # --fsdp
 
 # --max_source_length 1024 --max_target_length 256\
+
+# Why we don't evaluate in FSDP: model.generate isn't fsdp supported, but LM pretraining like auto-regressive tasks may still work in eval.
+# https://github.com/pytorch/pytorch/issues/82461
+# https://github.com/huggingface/accelerate/issues/570
+
+# More FSDP 
+# https://huggingface.co/blog/pytorch-fsdp
+# https://github.com/huggingface/accelerate/issues/919
