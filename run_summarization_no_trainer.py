@@ -627,6 +627,10 @@ def main():
         model.resize_token_embeddings(len(tokenizer))
     if model.config.decoder_start_token_id is None:
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
+        
+    if accelerator.state.deepspeed_plugin:
+        logger.info(f"deep speed state = {accelerator.state.deepspeed_plugin} and deep speed config = {str(accelerator.state.deepspeed_plugin.deepspeed_config)}")
+        accelerator.state.deepspeed_plugin.deepspeed_config['train_micro_batch_size_per_gpu'] = args.per_device_train_batch_size
 
     train_dataloader, eval_dataloader = get_dataloaders(args, accelerator, tokenizer, model)
     trainable_params = sum(p.numel()
@@ -649,7 +653,18 @@ def main():
             "weight_decay": 0.0,
         },
     ]
-    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
+    not_use_dummy_opt_stage3 = accelerator.state.deepspeed_plugin is None \
+    or "optimizer" not in accelerator.state.deepspeed_plugin.deepspeed_config \
+    or accelerator.state.deepspeed_plugin.deepspeed_config["zero_stage"] != 3
+    
+    optimizer_cls = (
+        torch.optim.AdamW
+        if not_use_dummy_opt_stage3
+        else DummyOptim
+     )
+    optimizer = optimizer_cls(
+        optimizer_grouped_parameters, lr=args.learning_rate)
+    
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -657,14 +672,23 @@ def main():
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
+      
+    not_use_dummy_scheduler_stage3 = accelerator.state.deepspeed_plugin is None \
+        or "scheduler" not in accelerator.state.deepspeed_plugin.deepspeed_config \
+        or accelerator.state.deepspeed_plugin.deepspeed_config["zero_stage"] != 3
+    if not_use_dummy_scheduler_stage3:
+        lr_scheduler = get_scheduler(
+            name=args.lr_scheduler_type,
+            optimizer=optimizer,
+            num_warmup_steps=args.num_warmup_steps * args.gradient_accumulation_steps,
+            num_training_steps=args.max_train_steps * args.gradient_accumulation_steps,
+        )
+    else:
+        lr_scheduler = DummyScheduler(
+             optimizer, total_num_steps=args.max_train_steps, warmup_num_steps=args.num_warmup_steps
+         )
 
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=args.num_warmup_steps * args.gradient_accumulation_steps,
-        num_training_steps=args.max_train_steps * args.gradient_accumulation_steps,
-    )
-
+    logger.warning(f"Optimiser class = {optimizer_cls}, Scheduler = {lr_scheduler}, not use_dummy_opt_stage3 = {not_use_dummy_opt_stage3}, not use_dummy_scheduler_stage3 = {not_use_dummy_scheduler_stage3}")
     # Prepare everything with our `accelerator`.
     model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, eval_dataloader, lr_scheduler

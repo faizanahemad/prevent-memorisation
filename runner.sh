@@ -2,6 +2,9 @@
 MODEL="t5-small"
 bs=16
 dataset="samsum"
+max_grad_norm=1.0
+gradient_accumulation_steps=2
+
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
 export WANDB_MODE="dryrun"
@@ -13,10 +16,10 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --model_name_or_path $MODEL \
     --dataset_name $dataset  \
     --pad_to_max_length \
-    --max_grad_norm 1.0 \
+    --max_grad_norm $max_grad_norm \
     --per_device_train_batch_size $bs \
     --per_device_eval_batch_size $bs \
-    --gradient_accumulation_steps 2 \
+    --gradient_accumulation_steps $gradient_accumulation_steps \
     --gradient_checkpointing_enable \
     --learning_rate 1e-3 \
     --weight_decay 0.1 \
