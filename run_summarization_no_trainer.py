@@ -109,17 +109,20 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--gradient_checkpointing_enable",
-        action="store_true",
-        help="Enable gradient checkpointing. This may not work if your architecture freezes some parameters and you try to use deepspeed or fsdp.",
-    )
-    parser.add_argument(
         "--train_fraction_number",
         type=int,
         default=None,
         help=(
             "The train dataset fraction we train on"
         ),
+    )
+    parser.add_argument(
+        "--gradient_checkpointing_enable",
+        action="store_true",
+        help="Enable gradient checkpointing. This may not work if your architecture freezes some parameters and you try to use deepspeed or fsdp.",
+    )
+    parser.add_argument(
+        "--zero_shot_evaluation", action="store_true", help="Zero shot Evaluate before any training"
     )
     parser.add_argument(
         "--train_file", type=str, default=None, help="A csv or a json file containing the training data."
@@ -490,11 +493,13 @@ def get_dataloaders(args, accelerator, tokenizer, model):
 
 
 def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: str):
+    assert accelerator.state.deepspeed_plugin is None
     metric = evaluate.load("rouge")
     gen_kwargs = {
             "max_length": args.max_target_length,
             "num_beams": args.num_beams,
         }
+    progress_bar = tqdm(range(len(dataloader)), desc="evaluate", disable=not accelerator.is_local_main_process)
     for step, batch in enumerate(dataloader):
         with torch.no_grad():
             generated_tokens = accelerator.unwrap_model(model).generate(
@@ -528,6 +533,7 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
                 predictions=decoded_preds,
                 references=decoded_labels,
             )
+            progress_bar.update(1)
     result = metric.compute(use_stemmer=True)
     result = {k + (("_"+ result_key) if result_key is not None else ""): round(v * 100, 4) for k, v in result.items()}
     return result
@@ -583,11 +589,7 @@ def main():
     if args.seed is not None:
         set_seed(args.seed)
 
-    
-    
     accelerator.wait_for_everyone()
-
-    
 
     # Load pretrained model and tokenizer
     #
@@ -632,6 +634,9 @@ def main():
     if accelerator.state.deepspeed_plugin:
         logger.info(f"deep speed state = {accelerator.state.deepspeed_plugin} and deep speed config = {str(accelerator.state.deepspeed_plugin.deepspeed_config)}")
         accelerator.state.deepspeed_plugin.deepspeed_config['train_micro_batch_size_per_gpu'] = args.per_device_train_batch_size
+        accelerator.state.deepspeed_plugin.deepspeed_config['eval_micro_batch_size_per_gpu'] = args.per_device_eval_batch_size
+        accelerator.state.deepspeed_plugin.deepspeed_config['evaluation_micro_batch_size_per_gpu'] = args.per_device_eval_batch_size
+        accelerator.state.deepspeed_plugin.deepspeed_config['inference_micro_batch_size_per_gpu'] = args.per_device_eval_batch_size
 
     train_dataloader, eval_dataloader = get_dataloaders(args, accelerator, tokenizer, model)
     trainable_params = sum(p.numel()
@@ -714,16 +719,16 @@ def main():
     experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
     accelerator.init_trackers("summarization_no_trainer", experiment_config)
     
+    # Zero Shot evaluation
+    if args.zero_shot_evaluation:
+        model.eval()
+        result_train = evaluate_model(unwrapped_model, tokenizer, accelerator, train_dataloader, args, result_key="train")
+        result = evaluate_model(unwrapped_model, tokenizer, accelerator, eval_dataloader, args, result_key=None)
+        result.update(result_train)
+        logger.info(f"Zero shot results = {result}")
 
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
-    model.eval()
-    result_train = evaluate_model(model, tokenizer, accelerator, train_dataloader, args, result_key="train")
-    result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, result_key=None)
-    result.update(result_train)
-    logger.info(f"Zero shot results = {result}")
-
-
     logger.info("***** Running training *****")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
