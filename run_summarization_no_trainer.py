@@ -717,6 +717,12 @@ def main():
 
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
+    model.eval()
+    result_train = evaluate_model(model, tokenizer, accelerator, train_dataloader, args, result_key="train")
+    result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, result_key=None)
+    result.update(result_train)
+    logger.info(f"Zero shot results = {result}")
+
 
     logger.info("***** Running training *****")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
@@ -749,12 +755,6 @@ def main():
             resume_step = int(training_difference.replace("step_", ""))
             starting_epoch = resume_step // len(train_dataloader)
             resume_step -= starting_epoch * len(train_dataloader)
-
-    model.eval()
-    result_train = evaluate_model(model, tokenizer, accelerator, train_dataloader, args, result_key="train")
-    result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, result_key=None)
-    result.update(result_train)
-    logger.info(f"Zero shot results = {result}")
 
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
