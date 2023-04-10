@@ -98,6 +98,30 @@ def parse_args():
         help="The configuration name of the dataset to use (via the datasets library).",
     )
     parser.add_argument(
+        "--fraction_dataset", action="store_true", help="Train over a smaller fraction of the dataset"
+    )
+    parser.add_argument(
+        "--n_dataset_fractions",
+        type=int,
+        default=None,
+        help=(
+            "The train dataset fraction we train on"
+        ),
+    )
+    parser.add_argument(
+        "--gradient_checkpointing_enable",
+        action="store_true",
+        help="Enable gradient checkpointing. This may not work if your architecture freezes some parameters and you try to use deepspeed or fsdp.",
+    )
+    parser.add_argument(
+        "--train_fraction_number",
+        type=int,
+        default=None,
+        help=(
+            "The train dataset fraction we train on"
+        ),
+    )
+    parser.add_argument(
         "--train_file", type=str, default=None, help="A csv or a json file containing the training data."
     )
     parser.add_argument(
@@ -306,6 +330,10 @@ def parse_args():
         if args.validation_file is not None:
             extension = args.validation_file.split(".")[-1]
             assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
+    if args.fraction_dataset:
+        assert args.n_dataset_fractions
+        assert args.train_fraction_number
+        assert args.n_dataset_fractions >= args.train_fraction_number
 
     return args
 
@@ -322,6 +350,7 @@ class Preprocess:
         self.tokenizer = tokenizer
         self.args = args
         self.padding = "max_length" if args.pad_to_max_length else False
+        
     def __call__(self, examples):
         text_column = self.text_column
         summary_column = self.summary_column
@@ -333,6 +362,7 @@ class Preprocess:
         targets = examples[summary_column]
         inputs = [prefix + inp for inp in inputs]
         model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
+        
 
         # Tokenize targets with the `text_target` keyword argument
         labels = tokenizer(text_target=targets, max_length=args.max_target_length, padding=padding, truncation=True)
@@ -346,7 +376,161 @@ class Preprocess:
 
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
+    
 
+def postprocess_text(preds, labels):
+    preds = [pred.strip() for pred in preds]
+    labels = [label.strip() for label in labels]
+
+    # rougeLSum expects newline after each sentence
+    preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
+    labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
+
+    return preds, labels
+
+
+def get_dataloaders(args, accelerator, tokenizer, model):
+    # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
+    # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
+    # (the dataset will be downloaded automatically from the datasets Hub).
+    #
+    # For CSV/JSON files, this script will use the column called 'text' or the first column if no column called
+    # 'text' is found. You can easily tweak this behavior (see below).
+    #
+    # In distributed training, the load_dataset function guarantee that only one local process can concurrently
+    # download the dataset.
+    if args.dataset_name is not None:
+        # Downloading and loading a dataset from the hub.
+        raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
+    else:
+        data_files = {}
+        if args.train_file is not None:
+            data_files["train"] = args.train_file
+        if args.validation_file is not None:
+            data_files["validation"] = args.validation_file
+        extension = args.train_file.split(".")[-1]
+        raw_datasets = load_dataset(extension, data_files=data_files)
+    # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
+    # https://huggingface.co/docs/datasets/loading_datasets.html.
+    prefix = args.source_prefix if args.source_prefix is not None else ""
+
+    # Preprocessing the datasets.
+    # First we tokenize all the texts.
+    column_names = raw_datasets["train"].column_names
+
+    # Get the column names for input/target.
+    dataset_columns = summarization_name_mapping.get(args.dataset_name, None)
+    if args.text_column is None:
+        assert dataset_columns is not None
+        text_column = dataset_columns[0]
+    else:
+        text_column = args.text_column
+        if text_column not in column_names:
+            raise ValueError(
+                f"--text_column' value '{args.text_column}' needs to be one of: {', '.join(column_names)}"
+            )
+    if args.summary_column is None:
+        assert dataset_columns is not None
+        summary_column = dataset_columns[1]
+    else:
+        summary_column = args.summary_column
+        if summary_column not in column_names:
+            raise ValueError(
+                f"--summary_column' value '{args.summary_column}' needs to be one of: {', '.join(column_names)}"
+            )
+
+
+    # Temporarily set max_target_length for training.
+    max_target_length = args.max_target_length
+    padding = "max_length" if args.pad_to_max_length else False
+    preprocess_function = Preprocess(text_column, summary_column, prefix, tokenizer, args)
+
+
+    with accelerator.main_process_first():
+        train_dataset = raw_datasets["train"].map(
+            preprocess_function,
+            batched=True,
+            num_proc=args.preprocessing_num_workers,
+            remove_columns=column_names,
+            load_from_cache_file=not args.overwrite_cache,
+            desc="Running tokenizer on dataset",
+        )
+
+        # Temporarily set max_target_length for validation.
+        max_target_length = args.max_target_length
+        eval_dataset = raw_datasets["validation"].map(
+            preprocess_function,
+            batched=True,
+            num_proc=args.preprocessing_num_workers,
+            remove_columns=column_names,
+            load_from_cache_file=not args.overwrite_cache,
+            desc="Running tokenizer on dataset",
+        )
+
+    # Log a few random samples from the training set:
+    for index in random.sample(range(len(train_dataset)), 1):
+        logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
+
+    label_pad_token_id = -100 if args.ignore_pad_token_for_loss else tokenizer.pad_token_id
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer,
+        model=model,
+        label_pad_token_id=label_pad_token_id,
+        pad_to_multiple_of=8 if accelerator.use_fp16 else None,
+    )
+
+    
+
+    train_dataloader = DataLoader(
+        train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
+    )
+    eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
+    logger.info(f"  Num examples = {len(train_dataset)}")
+    return train_dataloader, eval_dataloader
+
+
+def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: str):
+    metric = evaluate.load("rouge")
+    gen_kwargs = {
+            "max_length": args.max_target_length,
+            "num_beams": args.num_beams,
+        }
+    for step, batch in enumerate(dataloader):
+        with torch.no_grad():
+            generated_tokens = accelerator.unwrap_model(model).generate(
+                batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+                **gen_kwargs,
+            )
+
+            generated_tokens = accelerator.pad_across_processes(
+                generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
+            )
+            labels = batch["labels"]
+            if not args.pad_to_max_length:
+                # If we did not pad to max length, we need to pad the labels too
+                labels = accelerator.pad_across_processes(batch["labels"], dim=1, pad_index=tokenizer.pad_token_id)
+
+            generated_tokens, labels = accelerator.gather_for_metrics((generated_tokens, labels))
+            generated_tokens = generated_tokens.cpu().numpy()
+            labels = labels.cpu().numpy()
+
+            if args.ignore_pad_token_for_loss:
+                # Replace -100 in the labels as we can't decode them.
+                labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+            if isinstance(generated_tokens, tuple):
+                generated_tokens = generated_tokens[0]
+            decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+            decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+            decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
+            metric.add_batch(
+                predictions=decoded_preds,
+                references=decoded_labels,
+            )
+    result = metric.compute(use_stemmer=True)
+    result = {k + (("_"+ result_key) if result_key is not None else ""): round(v * 100, 4) for k, v in result.items()}
+    return result
 
 def main():
     args = parse_args()
@@ -401,28 +585,7 @@ def main():
     
     accelerator.wait_for_everyone()
 
-    # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
-    # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
-    # (the dataset will be downloaded automatically from the datasets Hub).
-    #
-    # For CSV/JSON files, this script will use the column called 'text' or the first column if no column called
-    # 'text' is found. You can easily tweak this behavior (see below).
-    #
-    # In distributed training, the load_dataset function guarantee that only one local process can concurrently
-    # download the dataset.
-    if args.dataset_name is not None:
-        # Downloading and loading a dataset from the hub.
-        raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
-    else:
-        data_files = {}
-        if args.train_file is not None:
-            data_files["train"] = args.train_file
-        if args.validation_file is not None:
-            data_files["validation"] = args.validation_file
-        extension = args.train_file.split(".")[-1]
-        raw_datasets = load_dataset(extension, data_files=data_files)
-    # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
-    # https://huggingface.co/docs/datasets/loading_datasets.html.
+    
 
     # Load pretrained model and tokenizer
     #
@@ -452,6 +615,9 @@ def main():
     else:
         logger.info("Training new model from scratch")
         model = AutoModelForSeq2SeqLM.from_config(config)
+        
+    if args.gradient_checkpointing_enable:
+        model.gradient_checkpointing_enable()
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -462,106 +628,7 @@ def main():
     if model.config.decoder_start_token_id is None:
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
 
-    prefix = args.source_prefix if args.source_prefix is not None else ""
-
-    # Preprocessing the datasets.
-    # First we tokenize all the texts.
-    column_names = raw_datasets["train"].column_names
-
-    # Get the column names for input/target.
-    dataset_columns = summarization_name_mapping.get(args.dataset_name, None)
-    if args.text_column is None:
-        assert dataset_columns is not None
-        text_column = dataset_columns[0]
-    else:
-        text_column = args.text_column
-        if text_column not in column_names:
-            raise ValueError(
-                f"--text_column' value '{args.text_column}' needs to be one of: {', '.join(column_names)}"
-            )
-    if args.summary_column is None:
-        assert dataset_columns is not None
-        summary_column = dataset_columns[1]
-    else:
-        summary_column = args.summary_column
-        if summary_column not in column_names:
-            raise ValueError(
-                f"--summary_column' value '{args.summary_column}' needs to be one of: {', '.join(column_names)}"
-            )
-
-
-    # Temporarily set max_target_length for training.
-    max_target_length = args.max_target_length
-    padding = "max_length" if args.pad_to_max_length else False
-    preprocess_function = Preprocess(text_column, summary_column, prefix, tokenizer, args)
-
-#     def preprocess_function(examples):
-#         inputs = examples[text_column]
-#         targets = examples[summary_column]
-#         inputs = [prefix + inp for inp in inputs]
-#         model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
-
-#         # Tokenize targets with the `text_target` keyword argument
-#         labels = tokenizer(text_target=targets, max_length=max_target_length, padding=padding, truncation=True)
-
-#         # If we are padding here, replace all tokenizer.pad_token_id in the labels by -100 when we want to ignore
-#         # padding in the loss.
-#         if padding == "max_length" and args.ignore_pad_token_for_loss:
-#             labels["input_ids"] = [
-#                 [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
-#             ]
-
-#         model_inputs["labels"] = labels["input_ids"]
-#         return model_inputs
-
-    with accelerator.main_process_first():
-        train_dataset = raw_datasets["train"].map(
-            preprocess_function,
-            batched=True,
-            num_proc=args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not args.overwrite_cache,
-            desc="Running tokenizer on dataset",
-        )
-
-        # Temporarily set max_target_length for validation.
-        max_target_length = args.max_target_length
-        eval_dataset = raw_datasets["validation"].map(
-            preprocess_function,
-            batched=True,
-            num_proc=args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not args.overwrite_cache,
-            desc="Running tokenizer on dataset",
-        )
-
-    # Log a few random samples from the training set:
-    for index in random.sample(range(len(train_dataset)), 1):
-        logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
-
-    label_pad_token_id = -100 if args.ignore_pad_token_for_loss else tokenizer.pad_token_id
-    data_collator = DataCollatorForSeq2Seq(
-        tokenizer,
-        model=model,
-        label_pad_token_id=label_pad_token_id,
-        pad_to_multiple_of=8 if accelerator.use_fp16 else None,
-    )
-
-    def postprocess_text(preds, labels):
-        preds = [pred.strip() for pred in preds]
-        labels = [label.strip() for label in labels]
-
-        # rougeLSum expects newline after each sentence
-        preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
-        labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
-
-        return preds, labels
-
-    train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
-    )
-    eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
-
+    train_dataloader, eval_dataloader = get_dataloaders(args, accelerator, tokenizer, model)
     trainable_params = sum(p.numel()
                            for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel()
@@ -621,15 +688,12 @@ def main():
     # TensorBoard cannot log Enums, need the raw value
     experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
     accelerator.init_trackers("summarization_no_trainer", experiment_config)
-
-    # Metric
-    metric = evaluate.load("rouge")
+    
 
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
@@ -708,53 +772,16 @@ def main():
                 break
 
         model.eval()
-
-        gen_kwargs = {
-            "max_length": args.max_target_length,
-            "num_beams": args.num_beams,
-        }
-        for step, batch in enumerate(eval_dataloader):
-            with torch.no_grad():
-                generated_tokens = accelerator.unwrap_model(model).generate(
-                    batch["input_ids"],
-                    attention_mask=batch["attention_mask"],
-                    **gen_kwargs,
-                )
-
-                generated_tokens = accelerator.pad_across_processes(
-                    generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
-                )
-                labels = batch["labels"]
-                if not args.pad_to_max_length:
-                    # If we did not pad to max length, we need to pad the labels too
-                    labels = accelerator.pad_across_processes(batch["labels"], dim=1, pad_index=tokenizer.pad_token_id)
-
-                generated_tokens, labels = accelerator.gather_for_metrics((generated_tokens, labels))
-                generated_tokens = generated_tokens.cpu().numpy()
-                labels = labels.cpu().numpy()
-
-                if args.ignore_pad_token_for_loss:
-                    # Replace -100 in the labels as we can't decode them.
-                    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
-                if isinstance(generated_tokens, tuple):
-                    generated_tokens = generated_tokens[0]
-                decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-                decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-
-                decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
-                metric.add_batch(
-                    predictions=decoded_preds,
-                    references=decoded_labels,
-                )
-        result = metric.compute(use_stemmer=True)
-        result = {k: round(v * 100, 4) for k, v in result.items()}
-
+        result_train = evaluate_model(model, tokenizer, accelerator, train_dataloader, args, result_key="train")
+        result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, result_key=None)
+        result.update(result_train)
         logger.info(result)
 
         
         result["train_loss"] = total_loss.item() / len(train_dataloader)
         result["epoch"] = epoch
         result["step"] = completed_steps
+        result["lr"] = optimizer.param_groups[0]['lr']
         accelerator.log(result, step=completed_steps)
 
         if args.checkpointing_steps == "epoch":

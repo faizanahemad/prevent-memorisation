@@ -1,6 +1,6 @@
 # l25
 MODEL="t5-small"
-bs=8
+bs=16
 dataset="samsum"
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
@@ -16,12 +16,13 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --max_grad_norm 1.0 \
     --per_device_train_batch_size $bs \
     --per_device_eval_batch_size $bs \
-    --gradient_accumulation_steps 4 \
+    --gradient_accumulation_steps 2 \
+    --gradient_checkpointing_enable \
     --learning_rate 1e-3 \
     --weight_decay 0.1 \
     --num_warmup_steps 2000 \
     --lr_scheduler_type cosine \
-    --num_train_epochs 5 \
+    --num_train_epochs 10 \
     --report_to wandb \
     --output_dir outputs/${MODEL}/${dataset} \
     --seed 42
