@@ -44,6 +44,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from copy import deepcopy
 import gc
+from accelerate import FullyShardedDataParallelPlugin
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
 
 
@@ -342,7 +343,8 @@ def parse_args():
     if args.fraction_dataset:
         assert args.n_dataset_fractions
         assert args.train_fraction_number
-        assert args.n_dataset_fractions >= args.train_fraction_number
+        args.train_fraction_number >= 0
+        assert args.n_dataset_fractions > args.train_fraction_number
 
     return args
 
@@ -475,6 +477,13 @@ def get_dataloaders(args, accelerator, tokenizer, model):
             load_from_cache_file=not args.overwrite_cache,
             desc="Running tokenizer on dataset",
         )
+        if args.fraction_dataset:
+            total_fractions = args.n_dataset_fractions
+            our_fraction = args.train_fraction_number
+            train_dataset = train_dataset.shuffle(args.seed).flatten_indices()
+            fraction_size = len(train_dataset)//total_fractions + 1
+            train_dataset = train_dataset.select(list(range(our_fraction * fraction_size, min((our_fraction+1) * fraction_size), len(train_dataset) - 1)))
+            
 
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 1):
@@ -511,7 +520,8 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
         state_dict = get_state_dict(unwrapped_model, accelerator, fsdp=True, rank0_only=False)
         fsdp_model_copy_for_eval_only.load_state_dict(state_dict)
         del state_dict
-        unwrapped_model = fsdp_model_copy_for_eval_only.to(accelerator.device)
+        fsdp_model_copy_for_eval_only = fsdp_model_copy_for_eval_only.to(accelerator.device)
+        unwrapped_model = fsdp_model_copy_for_eval_only
     gen_kwargs = {
             "max_length": args.max_target_length,
             "num_beams": args.num_beams,
@@ -553,6 +563,8 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
             progress_bar.update(1)
     result = metric.compute(use_stemmer=True)
     result = {k + (("_"+ result_key) if result_key is not None else ""): round(v * 100, 4) for k, v in result.items()}
+    if args.fsdp:
+        fsdp_model_copy_for_eval_only = fsdp_model_copy_for_eval_only.to("cpu")
     return result
 
 def main():
@@ -565,8 +577,9 @@ def main():
     accelerator_log_kwargs["log_with"] = args.report_to
     accelerator_log_kwargs["project_dir"] = args.output_dir
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+    fsdp_params = FullyShardedDataParallelPlugin(use_orig_params=True)
 
-    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, kwargs_handlers=[ddp_kwargs], **accelerator_log_kwargs)
+    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, fsdp_plugin=fsdp_params, kwargs_handlers=[ddp_kwargs], **accelerator_log_kwargs)
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
         os.makedirs(os.path.join(args.output_dir, args.model_name_or_path, args.dataset_name), exist_ok=True)
@@ -637,6 +650,7 @@ def main():
     else:
         logger.info("Training new model from scratch")
         model = AutoModelForSeq2SeqLM.from_config(config)
+    
         
     if args.gradient_checkpointing_enable:
         assert (hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin is None) or not hasattr(accelerator.state, "deepspeed_plugin")
@@ -765,6 +779,7 @@ def main():
         result.update(result_train)
         logger.info(f"Zero shot results = {result}")
 
+    
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
     logger.info("***** Running training *****")
@@ -823,6 +838,8 @@ def main():
                     lr_scheduler.step()
                 optimizer.zero_grad()
                 progress_bar.set_description(f"Epoch {epoch} - Completed Step {completed_steps}, step {step} - LR: {optimizer.param_groups[0]['lr']:.2e} - loss: {loss_record:.4f}")  
+                if np.isnan(float(loss_record.cpu())):
+                    raise ValueError(f"Epoch {epoch} - Completed Step {completed_steps}, step {step} - LR: {optimizer.param_groups[0]['lr']:.2e} - loss: {loss_record:.4f}")
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
