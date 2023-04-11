@@ -29,5 +29,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --report_to wandb \
     --output_dir outputs/${MODEL}/${dataset} \
     --fsdp\
+    --zero_shot_evaluation\
     --max_source_length 512 --max_target_length 128\
+    --fraction_dataset --n_dataset_fractions 8 --train_fraction_number 0\
     --seed 42

@@ -29,6 +29,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --report_to wandb \
     --output_dir outputs/${MODEL}/${dataset} \
     --fsdp\
+    --zero_shot_evaluation\
     --max_source_length 512 --max_target_length 128\
     --seed 42
     
@@ -51,6 +52,10 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
 # Why we don't evaluate in FSDP: model.generate isn't fsdp supported, but LM pretraining like auto-regressive tasks may still work in eval.
 # https://github.com/pytorch/pytorch/issues/82461
 # https://github.com/huggingface/accelerate/issues/570
+# cpu-offload in fsdp is only supported for bf16 and fp16, for t5-large and some models fp16 isn't supported.
+# https://discuss.huggingface.co/t/t5-fp16-issue-is-fixed/3139
+# https://github.com/huggingface/transformers/issues/11461
+# https://github.com/huggingface/transformers/issues/10830
 
 # More FSDP 
 # https://huggingface.co/blog/pytorch-fsdp

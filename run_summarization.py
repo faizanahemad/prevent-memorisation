@@ -342,7 +342,7 @@ def parse_args():
             assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
     if args.fraction_dataset:
         assert args.n_dataset_fractions
-        assert args.train_fraction_number
+        assert isinstance(args.train_fraction_number, int)
         args.train_fraction_number >= 0
         assert args.n_dataset_fractions > args.train_fraction_number
 
@@ -482,7 +482,7 @@ def get_dataloaders(args, accelerator, tokenizer, model):
             our_fraction = args.train_fraction_number
             train_dataset = train_dataset.shuffle(args.seed).flatten_indices()
             fraction_size = len(train_dataset)//total_fractions + 1
-            train_dataset = train_dataset.select(list(range(our_fraction * fraction_size, min((our_fraction+1) * fraction_size), len(train_dataset) - 1)))
+            train_dataset = train_dataset.select(range(our_fraction * fraction_size, min((our_fraction+1) * fraction_size, len(train_dataset) - 1)))
             
 
     # Log a few random samples from the training set:
@@ -577,7 +577,10 @@ def main():
     accelerator_log_kwargs["log_with"] = args.report_to
     accelerator_log_kwargs["project_dir"] = args.output_dir
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
-    fsdp_params = FullyShardedDataParallelPlugin(use_orig_params=True)
+    if args.fsdp:
+        fsdp_params = FullyShardedDataParallelPlugin(use_orig_params=True)
+    else:
+        fsdp_params = None
 
     accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, fsdp_plugin=fsdp_params, kwargs_handlers=[ddp_kwargs], **accelerator_log_kwargs)
     if accelerator.is_main_process:
