@@ -42,6 +42,7 @@ from filelock import FileLock
 from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+from copy import deepcopy
 import gc
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
 
@@ -500,11 +501,17 @@ def get_dataloaders(args, accelerator, tokenizer, model):
     return train_dataloader, training_eval_dataloader, eval_dataloader
 
 
-def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: str):
+def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: str, fsdp_model_copy_for_eval_only=None):
     assert (hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin is None) or not hasattr(accelerator.state, "deepspeed_plugin")
     # assert (hasattr(accelerator.state, "fsdp_plugin") and accelerator.state.fsdp_plugin is None) or not hasattr(accelerator.state, "fsdp_plugin")
     unwrapped_model = accelerator.unwrap_model(model)
     metric = evaluate.load("rouge")
+    if args.fsdp:
+        assert fsdp_model_copy_for_eval_only
+        state_dict = get_state_dict(unwrapped_model, accelerator, fsdp=True, rank0_only=False)
+        fsdp_model_copy_for_eval_only.load_state_dict(state_dict)
+        del state_dict
+        unwrapped_model = fsdp_model_copy_for_eval_only.to(accelerator.device)
     gen_kwargs = {
             "max_length": args.max_target_length,
             "num_beams": args.num_beams,
@@ -632,6 +639,8 @@ def main():
         model = AutoModelForSeq2SeqLM.from_config(config)
         
     if args.gradient_checkpointing_enable:
+        assert (hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin is None) or not hasattr(accelerator.state, "deepspeed_plugin")
+        assert (hasattr(accelerator.state, "fsdp_plugin") and accelerator.state.fsdp_plugin is None) or not hasattr(accelerator.state, "fsdp_plugin")
         model.gradient_checkpointing_enable()
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
@@ -661,8 +670,10 @@ def main():
                            for p in model.parameters())
 
     logger.info(f"Number of trainable parameters: {(trainable_params/(1024*1024)):.2f} Million, Total Parameter = {(total_params/(1024*1024)):.2f} Million")
+    fsdp_model_copy_for_eval_only = None
     if args.fsdp:
         assert (hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin is None) or not hasattr(accelerator.state, "deepspeed_plugin")
+        fsdp_model_copy_for_eval_only = deepcopy(model).to("cpu")
         model = accelerator.prepare(model)
         
     # Optimizer
@@ -747,8 +758,10 @@ def main():
     if args.zero_shot_evaluation:
         assert accelerator.state.deepspeed_plugin is None
         model.eval()
-        result_train = evaluate_model(model, tokenizer, accelerator, training_eval_dataloader, args, result_key="train")
-        result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, result_key=None)
+        result_train = evaluate_model(model, tokenizer, accelerator, training_eval_dataloader, args, 
+                                      result_key="train", fsdp_model_copy_for_eval_only=fsdp_model_copy_for_eval_only)
+        result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, 
+                                result_key=None, fsdp_model_copy_for_eval_only=fsdp_model_copy_for_eval_only)
         result.update(result_train)
         logger.info(f"Zero shot results = {result}")
 
@@ -822,15 +835,13 @@ def main():
             if completed_steps >= args.max_train_steps:
                 break
 
-        if args.fsdp:
-            result = {}
-        else:
-            model.eval()
-            result_train = evaluate_model(model, tokenizer, accelerator, training_eval_dataloader, args, result_key="train")
-            result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, result_key=None)
-            result.update(result_train)
-            logger.info(result)
-
+        model.eval()
+        result_train = evaluate_model(model, tokenizer, accelerator, training_eval_dataloader, args, 
+                                      result_key="train", fsdp_model_copy_for_eval_only=fsdp_model_copy_for_eval_only)
+        result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, 
+                                result_key=None, fsdp_model_copy_for_eval_only=fsdp_model_copy_for_eval_only)
+        result.update(result_train)
+        logger.info(result)
         
         result["train_loss"] = total_loss.item() / len(train_dataloader)
         result["epoch"] = epoch
@@ -849,9 +860,9 @@ def main():
     accelerator.end_training()
 
 
-def get_state_dict(unwrapped_model, accelerator, fsdp=False):
+def get_state_dict(unwrapped_model, accelerator, fsdp=False, rank0_only=True):
     if fsdp:
-        full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+        full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=rank0_only)
         with FSDP.state_dict_type(unwrapped_model, StateDictType.FULL_STATE_DICT, full_state_dict_config):
             state = accelerator.get_state_dict(unwrapped_model)
             return state
