@@ -642,6 +642,11 @@ def main():
     if model.config.decoder_start_token_id is None:
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
         
+    if args.load_model:
+        state_dict = torch.load(args.load_model, map_location='cpu')
+        model.load_state_dict(state_dict)
+        del state_dict
+        
     if hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin:
         logger.info(f"deep speed state = {accelerator.state.deepspeed_plugin} and deep speed config = {str(accelerator.state.deepspeed_plugin.deepspeed_config)}")
         accelerator.state.deepspeed_plugin.deepspeed_config['train_micro_batch_size_per_gpu'] = args.per_device_train_batch_size
@@ -873,9 +878,9 @@ def save_model_and_state(save_model, accelerator, model, tokenizer, output_dir, 
             logger.info(f"[save_model_and_state]: Saved Tokenizer state in {output_dir}")
         if result_dict and isinstance(result_dict, dict):
             all_results = {f"{k}": v for k, v in result_dict.items()}
-            with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
+            with open(os.path.join(output_dir, "all_results.json"), "w") as f:
                 json.dump(all_results, f)
-            logger.info(f"[save_model_and_state]: Saved Final Results in {os.path.join(args.output_dir, 'all_results.json')}")
+            logger.info(f"[save_model_and_state]: Saved Final Results in {os.path.join(output_dir, 'all_results.json')}")
 
 if __name__ == "__main__":
     main()

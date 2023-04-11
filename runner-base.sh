@@ -1,10 +1,10 @@
 # l25
-MODEL="t5-small"
-bs=32
+MODEL="t5-base"
+bs=12
 dataset="samsum"
 max_grad_norm=1.0
 gradient_accumulation_steps=1
-epochs=10
+epochs=2
 
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
@@ -30,8 +30,6 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --output_dir outputs/${MODEL}/${dataset} \
     --fsdp\
     --max_source_length 512 --max_target_length 128\
-    --load_model outputs/${MODEL}/${dataset}/model.pt \
-    --zero_shot_evaluation \
     --seed 42
     
     
@@ -40,13 +38,11 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
 # --multi_gpu
 # --zero_shot_evaluation
 # --gradient_checkpointing_enable
-# --load_model outputs/${MODEL}/${dataset}/model.pt
 
 ### FSDP details
-# --use_fsdp --fsdp_offload_params false --fsdp_auto_wrap_policy "TRANSFORMER_BASED_WRAP" --fsdp_sharding_strategy 1 --fsdp_transformer_layer_cls_to_wrap "T5Block" --fsdp_backward_prefetch_policy "BACKWARD_PRE" --fsdp_state_dict_type "FULL_STATE_DICT"
+# --use_fsdp --fsdp_offload_params true --fsdp_auto_wrap_policy "TRANSFORMER_BASED_WRAP" --fsdp_sharding_strategy 1 --fsdp_transformer_layer_cls_to_wrap "T5Block" --fsdp_backward_prefetch_policy "BACKWARD_PRE" --fsdp_state_dict_type "FULL_STATE_DICT"
+# --use_fsdp --fsdp_offload_params true --fsdp_auto_wrap_policy "TRANSFORMER_BASED_WRAP" --fsdp_sharding_strategy 2 --fsdp_transformer_layer_cls_to_wrap "T5Block" --fsdp_backward_prefetch_policy "BACKWARD_PRE" --fsdp_state_dict_type "FULL_STATE_DICT"
 # --fsdp
-# bs=32
-# gradient_accumulation_steps=1
 
 # --max_source_length 1024 --max_target_length 256\
 
@@ -57,3 +53,5 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
 # More FSDP 
 # https://huggingface.co/blog/pytorch-fsdp
 # https://github.com/huggingface/accelerate/issues/919
+
+# TODO: add eval for FSDP
