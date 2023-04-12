@@ -48,6 +48,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
 # gradient_accumulation_steps=1
 
 # --max_source_length 1024 --max_target_length 256\
+# --fraction_dataset --n_dataset_fractions 12 --train_fraction_number 0\
 
 # Why we don't evaluate in FSDP: model.generate isn't fsdp supported, but LM pretraining like auto-regressive tasks may still work in eval.
 # https://github.com/pytorch/pytorch/issues/82461
@@ -60,3 +61,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
 # More FSDP 
 # https://huggingface.co/blog/pytorch-fsdp
 # https://github.com/huggingface/accelerate/issues/919
+
+
+# bitsandbytes is incompatible with bf16 while t5-large is incompatible with fp16 which bitsandbytes can run.
+# .float() and .cpu() dont work but .item() works in bitsandbytes

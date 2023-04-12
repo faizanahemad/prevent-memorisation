@@ -328,6 +328,12 @@ def parse_args():
     parser.add_argument(
         "--fsdp", action="store_true", help="Are we using FSDP training"
     )
+    parser.add_argument(
+        "--use_8bit_optim", action="store_true", help="Use 8 bit Optim"
+    )
+    parser.add_argument(
+        "--use_8bit_model", action="store_true", help="Use 8 bit Optim"
+    )
     args = parser.parse_args()
 
     # Sanity checks
@@ -515,9 +521,12 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
     # assert (hasattr(accelerator.state, "fsdp_plugin") and accelerator.state.fsdp_plugin is None) or not hasattr(accelerator.state, "fsdp_plugin")
     unwrapped_model = accelerator.unwrap_model(model)
     metric = evaluate.load("rouge")
-    if args.fsdp:
+    if args.fsdp or args.use_8bit_optim:
         assert fsdp_model_copy_for_eval_only
-        state_dict = get_state_dict(unwrapped_model, accelerator, fsdp=True, rank0_only=False)
+        state_dict = get_state_dict(unwrapped_model, accelerator, fsdp=args.fsdp, rank0_only=False)
+        # reshape = (unwrapped_model.encoder.embed_tokens.num_embeddings, unwrapped_model.encoder.embed_tokens.embedding_dim)
+        # state_dict["encoder.embed_tokens.weight"] = state_dict["encoder.embed_tokens.weight"].reshape(reshape)
+        # state_dict["decoder.embed_tokens.weight"] = state_dict["decoder.embed_tokens.weight"].reshape(reshape)
         fsdp_model_copy_for_eval_only.load_state_dict(state_dict)
         del state_dict
         fsdp_model_copy_for_eval_only = fsdp_model_copy_for_eval_only.to(accelerator.device)
@@ -563,7 +572,7 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
             progress_bar.update(1)
     result = metric.compute(use_stemmer=True)
     result = {k + (("_"+ result_key) if result_key is not None else ""): round(v * 100, 4) for k, v in result.items()}
-    if args.fsdp:
+    if args.fsdp or args.use_8bit_optim:
         fsdp_model_copy_for_eval_only = fsdp_model_copy_for_eval_only.to("cpu")
     return result
 
@@ -578,7 +587,7 @@ def main():
     accelerator_log_kwargs["project_dir"] = args.output_dir
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
     if args.fsdp:
-        fsdp_params = FullyShardedDataParallelPlugin(use_orig_params=True)
+        fsdp_params = FullyShardedDataParallelPlugin(use_orig_params=True)	
     else:
         fsdp_params = None
 
@@ -646,7 +655,7 @@ def main():
 
     if args.model_name_or_path:
         model = AutoModelForSeq2SeqLM.from_pretrained(
-            args.model_name_or_path,
+            args.model_name_or_path, load_in_8bit=args.use_8bit_model,
             from_tf=bool(".ckpt" in args.model_name_or_path),
             config=config, # torch_dtype=torch.float16
         )
@@ -688,10 +697,11 @@ def main():
 
     logger.info(f"Number of trainable parameters: {(trainable_params/(1024*1024)):.2f} Million, Total Parameter = {(total_params/(1024*1024)):.2f} Million")
     fsdp_model_copy_for_eval_only = None
-    if args.fsdp:
+    if args.fsdp or args.use_8bit_optim:
         assert (hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin is None) or not hasattr(accelerator.state, "deepspeed_plugin")
         fsdp_model_copy_for_eval_only = deepcopy(model).to("cpu")
-        model = accelerator.prepare(model)
+        if args.fsdp:
+            model = accelerator.prepare(model)
         
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
@@ -710,13 +720,25 @@ def main():
     or "optimizer" not in accelerator.state.deepspeed_plugin.deepspeed_config \
     or accelerator.state.deepspeed_plugin.deepspeed_config["zero_stage"] != 3
     
-    optimizer_cls = (
-        torch.optim.AdamW
-        if not_use_dummy_opt_stage3
-        else DummyOptim
-     )
-    optimizer = optimizer_cls(
-        optimizer_grouped_parameters, lr=args.learning_rate)
+    if args.use_8bit_optim:
+        import bitsandbytes as bnb
+        assert not_use_dummy_opt_stage3
+        assert (hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin is None) or not hasattr(accelerator.state, "deepspeed_plugin")
+        optimizer = bnb.optim.AdamW8bit(optimizer_grouped_parameters, lr=args.learning_rate)
+        for module in model.modules():
+            if isinstance(module, torch.nn.Embedding):
+                bnb.optim.GlobalOptimManager.get_instance().register_module_override(
+                    module, 'weight', {'optim_bits': 32}
+                )            
+
+    else:
+        optimizer_cls = (
+            torch.optim.AdamW
+            if not_use_dummy_opt_stage3
+            else DummyOptim
+         )
+        optimizer = optimizer_cls(
+            optimizer_grouped_parameters, lr=args.learning_rate)
     
 
     # Scheduler and math around the number of training steps.
@@ -741,7 +763,7 @@ def main():
              optimizer, total_num_steps=args.max_train_steps, warmup_num_steps=args.num_warmup_steps
          )
 
-    logger.warning(f"Optimiser class = {optimizer_cls}, Scheduler = {lr_scheduler}, not use_dummy_opt_stage3 = {not_use_dummy_opt_stage3}, not use_dummy_scheduler_stage3 = {not_use_dummy_scheduler_stage3}")
+    logger.warning(f"Optimiser = {optimizer}, Scheduler = {lr_scheduler}, not use_dummy_opt_stage3 = {not_use_dummy_opt_stage3}, not use_dummy_scheduler_stage3 = {not_use_dummy_scheduler_stage3}")
     # Prepare everything with our `accelerator`.
     if args.fsdp:
         optimizer, train_dataloader, training_eval_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
@@ -770,7 +792,6 @@ def main():
     # TensorBoard cannot log Enums, need the raw value
     experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
     accelerator.init_trackers("summarization_no_trainer", experiment_config)
-    
     # Zero Shot evaluation
     if args.zero_shot_evaluation:
         assert accelerator.state.deepspeed_plugin is None
@@ -840,9 +861,9 @@ def main():
                 if not accelerator.optimizer_step_was_skipped:
                     lr_scheduler.step()
                 optimizer.zero_grad()
-                progress_bar.set_description(f"Epoch {epoch} - Completed Step {completed_steps}, step {step} - LR: {optimizer.param_groups[0]['lr']:.2e} - loss: {loss_record:.4f}")  
-                if np.isnan(float(loss_record.cpu())):
-                    raise ValueError(f"Epoch {epoch} - Completed Step {completed_steps}, step {step} - LR: {optimizer.param_groups[0]['lr']:.2e} - loss: {loss_record:.4f}")
+                progress_bar.set_description(f"Epoch {epoch} - Completed Step {completed_steps}, step {step} - LR: {optimizer.param_groups[0]['lr']:.2e} - loss: {loss_record.item():.4f}")  
+                if np.isnan(float(loss_record.item())):
+                    raise ValueError(f"Epoch {epoch} - Completed Step {completed_steps}, step {step} - LR: {optimizer.param_groups[0]['lr']:.2e} - loss: {loss_record.item():.4f}")
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -851,7 +872,7 @@ def main():
 
             if isinstance(checkpointing_steps, int):
                 if completed_steps % checkpointing_steps == 0:
-                    save_model_and_state(args.save_model, accelerator, model, tokenizer, args.output_dir, sub_dir=f"step_{completed_steps}", fsdp=args.fsdp, result_dict=None)
+                    save_model_and_state(args.save_model, accelerator, model, tokenizer, args.output_dir, sub_dir=f"step_{completed_steps}", fsdp=args.fsdp, use_8bit_optim=args.use_8bit_optim, result_dict=None)
             if completed_steps >= args.max_train_steps:
                 break
 
@@ -861,22 +882,21 @@ def main():
         result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, 
                                 result_key=None, fsdp_model_copy_for_eval_only=fsdp_model_copy_for_eval_only)
         result.update(result_train)
-        logger.info(result)
-        
         result["train_loss"] = total_loss.item() / len(train_dataloader)
         result["epoch"] = epoch
         result["step"] = completed_steps
         result["lr"] = optimizer.param_groups[0]['lr']
+        logger.info(result)
         accelerator.log(result, step=completed_steps)
 
         if args.checkpointing_steps == "epoch":
-            save_model_and_state(args.save_model, accelerator, model, tokenizer, args.output_dir, sub_dir=f"epoch_{epoch}", fsdp=args.fsdp, result_dict=None)
+            save_model_and_state(args.save_model, accelerator, model, tokenizer, args.output_dir, sub_dir=f"epoch_{epoch}", fsdp=args.fsdp,use_8bit_optim=args.use_8bit_optim, result_dict=None)
         gc.collect()
         torch.cuda.empty_cache()
 
     accelerator.wait_for_everyone()
     logger.info(" **** Finished Training ****")
-    save_model_and_state(args.save_model, accelerator, model, tokenizer, args.output_dir, sub_dir="", fsdp=args.fsdp, result_dict=result)
+    save_model_and_state(args.save_model, accelerator, model, tokenizer, args.output_dir, sub_dir="", fsdp=args.fsdp, use_8bit_optim=args.use_8bit_optim, result_dict=result)
     accelerator.end_training()
 
 
@@ -887,12 +907,17 @@ def get_state_dict(unwrapped_model, accelerator, fsdp=False, rank0_only=True):
             state = accelerator.get_state_dict(unwrapped_model)
             return state
     else:
-        return accelerator.get_state_dict(unwrapped_model)
+        state_dict = accelerator.get_state_dict(unwrapped_model)
+        # torch.save(state_dict, os.path.join(os.getcwd(), "temp.pt"))
+        # state_dict = torch.load(os.path.join(os.getcwd(), "temp.pt"), map_location="cpu")
+        # state_dict = {k:v.cpu() for k, v in state_dict.items()}
+        return state_dict
     
-def save_model_and_state(save_model, accelerator, model, tokenizer, output_dir, sub_dir="", fsdp=False, result_dict=None):
+def save_model_and_state(save_model, accelerator, model, tokenizer, output_dir, sub_dir="", fsdp=False, use_8bit_optim=False, result_dict=None):
     accelerator.wait_for_everyone()
     output_dir = os.path.join(output_dir, sub_dir) if isinstance(sub_dir, str) else output_dir
-    accelerator.save_state(output_dir)
+    if not use_8bit_optim:
+        accelerator.save_state(output_dir)
     logger.info(f"[save_model_and_state]: Saved Training state in {output_dir}")
     unwrapped_model = accelerator.unwrap_model(model)
     state_dict=get_state_dict(unwrapped_model, accelerator, fsdp)
