@@ -65,3 +65,6 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
 
 # bitsandbytes is incompatible with bf16 while t5-large is incompatible with fp16 which bitsandbytes can run.
 # .float() and .cpu() dont work but .item() works in bitsandbytes
+# accelerate.save doesn't work since optim can't be saved
+# ValueErrorValueError: : You can't train a model that has been loaded in 8-bit precision on multiple devices.You can't train a model that has been loaded in 8-bit precision on multiple devices.
+# fsdp cpu_offload takes 30% extra time than 8bit optim but is more memory efficient.
