@@ -59,6 +59,7 @@ from transformers import (
     DataCollatorForSeq2Seq,
     SchedulerType,
     get_scheduler,
+    AutoModelForCausalLM,
 )
 from transformers.utils.versions import require_version
 
@@ -341,6 +342,9 @@ def parse_args():
     parser.add_argument(
         "--use_8bit_model", action="store_true", help="Use 8 bit Optim"
     )
+    parser.add_argument(
+        "--use_clm", action="store_true", help="Use Causal LMs like GPT2"
+    )
     args = parser.parse_args()
 
     # Sanity checks
@@ -358,6 +362,9 @@ def parse_args():
         assert isinstance(args.train_fraction_number, int)
         args.train_fraction_number >= 0
         assert args.n_dataset_fractions > args.train_fraction_number
+        
+    if args.use_clm:
+        assert args.pad_to_max_length
 
     return args
 
@@ -375,6 +382,7 @@ class Preprocess:
         self.args = args
         self.padding = "max_length" if args.pad_to_max_length else False
         
+        
     def __call__(self, examples):
         text_column = self.text_column
         summary_column = self.summary_column
@@ -387,6 +395,16 @@ class Preprocess:
         inputs = [prefix + inp for inp in inputs]
         model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
         
+        if args.use_clm:
+            clm_text = [inp + " " + op for inp, op in zip(inputs, targets)]
+            clm_ids = tokenizer(clm_text, max_length=args.max_source_length + args.max_target_length, padding=padding, truncation=True)
+            clm_labels = torch.tensor(clm_ids["input_ids"])
+            attention_mask = torch.tensor(model_inputs['attention_mask'])
+            pad_size = clm_labels.size(1) - attention_mask.size(1)
+            attention_mask = torch.nn.functional.pad(attention_mask, (0, pad_size, 0, 0))
+            clm_labels[attention_mask.bool()] = -100
+            model_inputs.update({f"clm_{k}": v for k, v in clm_ids.items()})
+            model_inputs["clm_labels"] = clm_labels.tolist()
 
         # Tokenize targets with the `text_target` keyword argument
         labels = tokenizer(text_target=targets, max_length=args.max_target_length, padding=padding, truncation=True)
@@ -397,6 +415,10 @@ class Preprocess:
             labels["input_ids"] = [
                 [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
             ]
+            if args.use_clm:
+                model_inputs["clm_labels"] = [
+                    [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in model_inputs["clm_labels"]
+                ]
 
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
@@ -539,7 +561,7 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
         fsdp_model_copy_for_eval_only = fsdp_model_copy_for_eval_only.to(accelerator.device)
         unwrapped_model = fsdp_model_copy_for_eval_only
     gen_kwargs = {
-            "max_length": args.max_target_length,
+            "max_length": args.max_target_length + (args.max_source_length if args.use_clm else 0),
             "num_beams": args.num_beams,
         }
     progress_bar = tqdm(range(len(dataloader)), desc="evaluate", disable=not accelerator.is_local_main_process)
@@ -559,8 +581,17 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
             if not args.pad_to_max_length:
                 # If we did not pad to max length, we need to pad the labels too
                 labels = accelerator.pad_across_processes(batch["labels"], dim=1, pad_index=tokenizer.pad_token_id)
-
-            generated_tokens, labels = accelerator.gather_for_metrics((generated_tokens, labels))
+            attention_mask = batch['attention_mask']
+            if args.use_clm:
+                generated_tokens, labels, attention_mask = accelerator.gather_for_metrics((generated_tokens, labels, attention_mask))
+            else:
+                generated_tokens, labels = accelerator.gather_for_metrics((generated_tokens, labels))
+            
+            if args.use_clm:
+                pad_size = generated_tokens.size(1) - attention_mask.size(1)
+                attention_mask = torch.nn.functional.pad(attention_mask, (0, pad_size, 0, 0))
+                generated_tokens[attention_mask.bool()] = tokenizer.pad_token_id
+            
             generated_tokens = generated_tokens.cpu().numpy()
             labels = labels.cpu().numpy()
 
@@ -623,6 +654,7 @@ def main():
         "t5-3b",
         "t5-11b",
         "flan",
+        "gpt2",
     ]:
         logger.warning(
             "You're running a t5 model but didn't provide a source prefix, which is the expected, e.g. with "
@@ -661,13 +693,23 @@ def main():
             "You are instantiating a new tokenizer from scratch. This is not supported by this script."
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
+    if args.use_clm:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
 
     if args.model_name_or_path:
-        model = AutoModelForSeq2SeqLM.from_pretrained(
-            args.model_name_or_path, load_in_8bit=args.use_8bit_model,
-            from_tf=bool(".ckpt" in args.model_name_or_path),
-            config=config, # torch_dtype=torch.float16
-        )
+        if args.use_clm:
+            model = AutoModelForCausalLM.from_pretrained(
+                args.model_name_or_path, load_in_8bit=args.use_8bit_model,
+                from_tf=bool(".ckpt" in args.model_name_or_path),
+                config=config, # torch_dtype=torch.float16
+            )
+        else:
+            model = AutoModelForSeq2SeqLM.from_pretrained(
+                args.model_name_or_path, load_in_8bit=args.use_8bit_model,
+                from_tf=bool(".ckpt" in args.model_name_or_path),
+                config=config, # torch_dtype=torch.float16
+            )
     else:
         logger.info("Training new model from scratch")
         model = AutoModelForSeq2SeqLM.from_config(config)
@@ -678,7 +720,8 @@ def main():
     embedding_size = model.get_input_embeddings().weight.shape[0]
     if len(tokenizer) > embedding_size:
         model.resize_token_embeddings(len(tokenizer))
-    if model.config.decoder_start_token_id is None:
+        
+    if model.config.decoder_start_token_id is None and not args.use_clm:
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
         
     if args.load_model:
@@ -693,7 +736,7 @@ def main():
         
     if args.use_lora:
         peft_config = LoraConfig(
-            task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=args.lora_rank, lora_alpha=args.lora_alpha, lora_dropout=0.1
+            task_type=TaskType.CAUSAL_LM if args.use_clm else TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=args.lora_rank, lora_alpha=args.lora_alpha, lora_dropout=0.1
         )
         model = get_peft_model(model, peft_config)
         
@@ -875,6 +918,8 @@ def main():
                     continue
 
             with accelerator.accumulate(model):
+                if args.use_clm:
+                    batch = {k.replace("clm_", ""): v for k, v in batch.items() if "clm_" in k}
                 outputs = model(**batch)
                 loss = outputs.loss
                 # We keep track of the loss at each epoch

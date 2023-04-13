@@ -71,6 +71,6 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
 # fsdp cpu_offload takes 30% extra time (4.5s/It) than 8bit optim (3.4s/It) but is more memory efficient.
 
 # 8-bit + FSDP offload = X
-
+# Need this for checkpointing: https://discuss.huggingface.co/t/peft-lora-gpt-neox-backward-pass-failing/35641
 # Checkpointing adds 80% extra time in my experience (6s/It)
 # LoRA + checkpoint = 200% extra time (7.7s/It)
