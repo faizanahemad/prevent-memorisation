@@ -45,8 +45,9 @@ from tqdm.auto import tqdm
 from copy import deepcopy
 import gc
 from accelerate import FullyShardedDataParallelPlugin
+from peft import LoraConfig, PeftConfig, PeftModel, get_peft_model, prepare_model_for_int8_training,  TaskType
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
-
+from peft.utils.other import fsdp_auto_wrap_policy
 
 import transformers
 from transformers import (
@@ -320,6 +321,12 @@ def parse_args():
         help='Path to the model state dict'
     )
     parser.add_argument(
+        '--load_lora_model',
+        type=str,
+        default=None,
+        help='Path to the LoRA model state dict'
+    )
+    parser.add_argument(
         '--save_model',
         type=str,
         default="model.pt",
@@ -536,10 +543,11 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
             "num_beams": args.num_beams,
         }
     progress_bar = tqdm(range(len(dataloader)), desc="evaluate", disable=not accelerator.is_local_main_process)
+    unwrapped_model.config.use_cache = True
     for step, batch in enumerate(dataloader):
         with torch.no_grad():
             generated_tokens = unwrapped_model.generate(
-                batch["input_ids"],
+                input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 **gen_kwargs,
             )
@@ -572,6 +580,7 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
             progress_bar.update(1)
     result = metric.compute(use_stemmer=True)
     result = {k + (("_"+ result_key) if result_key is not None else ""): round(v * 100, 4) for k, v in result.items()}
+    unwrapped_model.config.use_cache = False
     if args.fsdp or args.use_8bit_optim:
         fsdp_model_copy_for_eval_only = fsdp_model_copy_for_eval_only.to("cpu")
     return result
@@ -585,9 +594,9 @@ def main():
     accelerator_log_kwargs = {}
     accelerator_log_kwargs["log_with"] = args.report_to
     accelerator_log_kwargs["project_dir"] = args.output_dir
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=args.use_lora or args.load_lora_model)
     if args.fsdp:
-        fsdp_params = FullyShardedDataParallelPlugin(use_orig_params=True)	
+        fsdp_params = FullyShardedDataParallelPlugin(use_orig_params=True)
     else:
         fsdp_params = None
 
@@ -663,12 +672,6 @@ def main():
         logger.info("Training new model from scratch")
         model = AutoModelForSeq2SeqLM.from_config(config)
     
-        
-    if args.gradient_checkpointing_enable:
-        assert (hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin is None) or not hasattr(accelerator.state, "deepspeed_plugin")
-        # assert (hasattr(accelerator.state, "fsdp_plugin") and accelerator.state.fsdp_plugin is None) or not hasattr(accelerator.state, "fsdp_plugin")
-        model.enable_input_require_grads()
-        model.gradient_checkpointing_enable()
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -682,6 +685,23 @@ def main():
         state_dict = torch.load(args.load_model, map_location='cpu')
         model.load_state_dict(state_dict)
         del state_dict
+        
+    if args.load_lora_model:
+        peft_config = PeftConfig.from_pretrained(args.load_lora_model)
+        model = PeftModel.from_pretrained(model, args.load_lora_model)
+        
+        
+    if args.use_lora:
+        peft_config = LoraConfig(
+            task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=args.lora_rank, lora_alpha=args.lora_alpha, lora_dropout=0.1
+        )
+        model = get_peft_model(model, peft_config)
+        
+    if args.gradient_checkpointing_enable:
+        assert (hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin is None) or not hasattr(accelerator.state, "deepspeed_plugin")
+        # assert (hasattr(accelerator.state, "fsdp_plugin") and accelerator.state.fsdp_plugin is None) or not hasattr(accelerator.state, "fsdp_plugin")
+        model.enable_input_require_grads()
+        model.gradient_checkpointing_enable()
         
     if hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin:
         logger.info(f"deep speed state = {accelerator.state.deepspeed_plugin} and deep speed config = {str(accelerator.state.deepspeed_plugin.deepspeed_config)}")
@@ -702,7 +722,10 @@ def main():
         assert (hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin is None) or not hasattr(accelerator.state, "deepspeed_plugin")
         fsdp_model_copy_for_eval_only = deepcopy(model).to("cpu")
         if args.fsdp:
+            if args.use_lora or args.load_lora_model:
+                accelerator.state.fsdp_plugin.auto_wrap_policy = fsdp_auto_wrap_policy(model)
             model = accelerator.prepare(model)
+            
         
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
@@ -839,6 +862,8 @@ def main():
             starting_epoch = resume_step // len(train_dataloader)
             resume_step -= starting_epoch * len(train_dataloader)
 
+    gc.collect()
+    torch.cuda.empty_cache()
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
         total_loss = 0
