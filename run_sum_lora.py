@@ -571,13 +571,12 @@ def get_dataloaders(args, accelerator, tokenizer, model):
         train_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
     )
     eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
-    logger.info(f"  Num examples = {len(train_dataset)}")
+    logger.info(f"  Num Train examples = {len(train_dataset)}, Num Eval Examples = {len(eval_dataset)}")
     return train_dataloader, training_eval_dataloader, eval_dataloader
 
 
 def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: str, fsdp_model_copy_for_eval_only=None):
     assert (hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin is None) or not hasattr(accelerator.state, "deepspeed_plugin")
-    # assert (hasattr(accelerator.state, "fsdp_plugin") and accelerator.state.fsdp_plugin is None) or not hasattr(accelerator.state, "fsdp_plugin")
     unwrapped_model = accelerator.unwrap_model(model)
     metric = evaluate.load("rouge")
     if args.fsdp or args.use_8bit_optim:
@@ -594,6 +593,8 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
             "max_length": args.max_target_length + (args.max_source_length if args.use_clm else 0),
             "num_beams": args.num_beams,
         }
+    if args.use_clm and "gpt2" in args.model_name_or_path:
+        gen_kwargs.update({"pad_token_id": tokenizer.eos_token_id})
     progress_bar = tqdm(range(len(dataloader)), desc="evaluate", disable=not accelerator.is_local_main_process)
     unwrapped_model.config.use_cache = True
     unwrapped_model.eval()
@@ -612,11 +613,7 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
             if not args.pad_to_max_length:
                 # If we did not pad to max length, we need to pad the labels too
                 labels = accelerator.pad_across_processes(batch["labels"], dim=1, pad_index=tokenizer.pad_token_id)
-            # input_ids = batch["input_ids"]
-            # generated_tokens, labels, input_ids = accelerator.gather_for_metrics((generated_tokens, labels, input_ids))
             generated_tokens, labels = accelerator.gather_for_metrics((generated_tokens, labels))
-            # temp_generated_tokens = generated_tokens
-            # pre_generated_tokens = generated_tokens[:, :args.max_source_length]
             if args.use_clm:
                 generated_tokens = generated_tokens[:, args.max_source_length:]
                 assert generated_tokens.size(1) == labels.size(1)
@@ -631,14 +628,6 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
                 generated_tokens = generated_tokens[0]
             decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True)
             decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True, clean_up_tokenization_spaces=True)
-            # temp_generated_tokens = tokenizer.batch_decode(temp_generated_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True)
-            # pre_generated_tokens = tokenizer.batch_decode(pre_generated_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True)
-            # input_ids = tokenizer.batch_decode(input_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
-            # if accelerator.is_main_process:
-            #     print("=" * 40)
-            #     print("||****|| Labels =  : \n" + decoded_labels[0] + "\n||****|| Predictions =  : \n" + decoded_preds[0] + " \n||****|| All generated Tokens = \n" + temp_generated_tokens[0] + " \n||****|| Output over Inp = \n" + pre_generated_tokens[0] + " \n||****|| Input = \n" + input_ids[0])
-            #     print("=" * 40)
-
             decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
             metric.add_batch(
                 predictions=decoded_preds,
@@ -961,13 +950,6 @@ def main():
             with accelerator.accumulate(model):
                 if args.use_clm:
                     batch = {k.replace("clm_", ""): v for k, v in batch.items() if "clm_" in k}
-                    # if accelerator.is_main_process:
-                    #     decoded_inputs = tokenizer.batch_decode(batch["input_ids"], skip_special_tokens=True, clean_up_tokenization_spaces=True)
-                    #     labels = batch["labels"].cpu().numpy()
-                    #     inputs = batch["input_ids"].cpu().numpy()
-                    #     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
-                    #     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True, clean_up_tokenization_spaces=True)
-                    #     print(list(zip(decoded_inputs, decoded_labels))[0], np.all(inputs==labels))
                 outputs = model(**batch)
                 loss = outputs.loss
                 # We keep track of the loss at each epoch
