@@ -396,16 +396,46 @@ class Preprocess:
         model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
         
         if args.use_clm:
-            clm_text = [inp + " " + op for inp, op in zip(inputs, targets)]
-            clm_ids = tokenizer(clm_text, max_length=args.max_source_length + args.max_target_length, padding=padding, truncation=True)
-            clm_labels = torch.tensor(clm_ids["input_ids"])
-            attention_mask = torch.tensor(model_inputs['attention_mask'])
-            pad_size = clm_labels.size(1) - attention_mask.size(1)
-            attention_mask = torch.nn.functional.pad(attention_mask, (0, pad_size, 0, 0))
-            clm_labels[attention_mask.bool()] = -100
-            model_inputs.update({f"clm_{k}": v for k, v in clm_ids.items()})
-            model_inputs["clm_labels"] = clm_labels.tolist()
+            max_length = args.max_source_length + args.max_target_length
+            clm_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=False, truncation=True)
+            clm_targets = tokenizer(targets, max_length=args.max_target_length, padding=False, truncation=True)
+            
+            # if context is ending with special token, remove it
+            if len(clm_inputs['input_ids'][0]) > 0 and clm_inputs['input_ids'][0][-1] in tokenizer.all_special_ids:
+                clm_inputs['input_ids'] = [i[:-1] for i in clm_inputs['input_ids']]
+                clm_inputs['attention_mask'] = [a[:-1] for a in clm_inputs['attention_mask']]
+                
+            # if context is ending with special token, remove it
+            if len(model_inputs['input_ids'][0]) > 0 and model_inputs['input_ids'][0][-1] in tokenizer.all_special_ids:
+                model_inputs['input_ids'] = [i[:-1] for i in model_inputs['input_ids']]
+                model_inputs['attention_mask'] = [a[:-1] for a in model_inputs['attention_mask']]
+                
+            # if target is starting with special token, remove it
+            if len(clm_targets['input_ids'][0]) > 0 and clm_targets['input_ids'][0][0] in tokenizer.all_special_ids:
+                clm_targets['input_ids'] = [i[1:] for i in clm_targets['input_ids']]
+                clm_targets['attention_mask'] = [a[1:] for a in clm_targets['attention_mask']]
+            
+            # Concat text
+            out = {}
+            out['input_ids'] = [i1 + i2 for i1,
+                                i2 in zip(clm_inputs['input_ids'], clm_targets['input_ids'])]
+            out['attention_mask'] = [a1 + a2 for a1,
+                                     a2 in zip(clm_inputs['attention_mask'], clm_targets['attention_mask'])]
 
+            # set -100 for context tokens
+            out["labels"] = [[-100] * len(i1) + i2 for i1, i2 in zip(clm_inputs['input_ids'], clm_targets['input_ids'])]
+            
+            # Pad -> Left pad and truncate
+            out["input_ids"] = [( [tokenizer.pad_token_id] * (max_length - len(i))) + i for i in out["input_ids"]]
+            out["attention_mask"] = [([0] * (max_length - len(i))) + [1] * len(i) for i in out["attention_mask"]]
+            out["labels"] = [([tokenizer.pad_token_id] * (max_length - len(i))) + i for i in out["labels"]]
+            # truncate to max_length
+            out["input_ids"] = [i[:max_length] for i in out["input_ids"]]
+            out["attention_mask"] = [a[:max_length]
+                                          for a in out["attention_mask"]]
+            out["labels"] = [l[:max_length] for l in out["labels"]]
+            model_inputs.update({f"clm_{k}": v for k, v in out.items()})
+            
         # Tokenize targets with the `text_target` keyword argument
         labels = tokenizer(text_target=targets, max_length=args.max_target_length, padding=padding, truncation=True)
 
@@ -566,6 +596,7 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
         }
     progress_bar = tqdm(range(len(dataloader)), desc="evaluate", disable=not accelerator.is_local_main_process)
     unwrapped_model.config.use_cache = True
+    unwrapped_model.eval()
     for step, batch in enumerate(dataloader):
         with torch.no_grad():
             generated_tokens = unwrapped_model.generate(
@@ -581,17 +612,15 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
             if not args.pad_to_max_length:
                 # If we did not pad to max length, we need to pad the labels too
                 labels = accelerator.pad_across_processes(batch["labels"], dim=1, pad_index=tokenizer.pad_token_id)
-            attention_mask = batch['attention_mask']
+            # input_ids = batch["input_ids"]
+            # generated_tokens, labels, input_ids = accelerator.gather_for_metrics((generated_tokens, labels, input_ids))
+            generated_tokens, labels = accelerator.gather_for_metrics((generated_tokens, labels))
+            # temp_generated_tokens = generated_tokens
+            # pre_generated_tokens = generated_tokens[:, :args.max_source_length]
             if args.use_clm:
-                generated_tokens, labels, attention_mask = accelerator.gather_for_metrics((generated_tokens, labels, attention_mask))
-            else:
-                generated_tokens, labels = accelerator.gather_for_metrics((generated_tokens, labels))
-            
-            if args.use_clm:
-                pad_size = generated_tokens.size(1) - attention_mask.size(1)
-                attention_mask = torch.nn.functional.pad(attention_mask, (0, pad_size, 0, 0))
-                generated_tokens[attention_mask.bool()] = tokenizer.pad_token_id
-            
+                generated_tokens = generated_tokens[:, args.max_source_length:]
+                assert generated_tokens.size(1) == labels.size(1)
+
             generated_tokens = generated_tokens.cpu().numpy()
             labels = labels.cpu().numpy()
 
@@ -600,8 +629,15 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
                 labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
             if isinstance(generated_tokens, tuple):
                 generated_tokens = generated_tokens[0]
-            decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-            decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+            decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+            decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+            # temp_generated_tokens = tokenizer.batch_decode(temp_generated_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+            # pre_generated_tokens = tokenizer.batch_decode(pre_generated_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+            # input_ids = tokenizer.batch_decode(input_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+            # if accelerator.is_main_process:
+            #     print("=" * 40)
+            #     print("||****|| Labels =  : \n" + decoded_labels[0] + "\n||****|| Predictions =  : \n" + decoded_preds[0] + " \n||****|| All generated Tokens = \n" + temp_generated_tokens[0] + " \n||****|| Output over Inp = \n" + pre_generated_tokens[0] + " \n||****|| Input = \n" + input_ids[0])
+            #     print("=" * 40)
 
             decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
             metric.add_batch(
@@ -612,6 +648,7 @@ def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: 
     result = metric.compute(use_stemmer=True)
     result = {k + (("_"+ result_key) if result_key is not None else ""): round(v * 100, 4) for k, v in result.items()}
     unwrapped_model.config.use_cache = False
+    unwrapped_model.train()
     if args.fsdp or args.use_8bit_optim:
         fsdp_model_copy_for_eval_only = fsdp_model_copy_for_eval_only.to("cpu")
     return result
@@ -696,6 +733,7 @@ def main():
     if args.use_clm:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
+        tokenizer.padding_side = "left"
 
     if args.model_name_or_path:
         if args.use_clm:
@@ -862,13 +900,16 @@ def main():
     # Zero Shot evaluation
     if args.zero_shot_evaluation:
         assert accelerator.state.deepspeed_plugin is None
-        model.eval()
         result_train = evaluate_model(model, tokenizer, accelerator, training_eval_dataloader, args, 
                                       result_key="train", fsdp_model_copy_for_eval_only=fsdp_model_copy_for_eval_only)
         result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, 
                                 result_key=None, fsdp_model_copy_for_eval_only=fsdp_model_copy_for_eval_only)
         result.update(result_train)
+        result["epoch"] = 0
+        result["step"] = 0
+        result["lr"] = optimizer.param_groups[0]['lr']
         logger.info(f"Zero shot results = {result}")
+        accelerator.log(result, step=0)
 
     
     # Train!
@@ -920,6 +961,13 @@ def main():
             with accelerator.accumulate(model):
                 if args.use_clm:
                     batch = {k.replace("clm_", ""): v for k, v in batch.items() if "clm_" in k}
+                    # if accelerator.is_main_process:
+                    #     decoded_inputs = tokenizer.batch_decode(batch["input_ids"], skip_special_tokens=True, clean_up_tokenization_spaces=True)
+                    #     labels = batch["labels"].cpu().numpy()
+                    #     inputs = batch["input_ids"].cpu().numpy()
+                    #     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+                    #     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+                    #     print(list(zip(decoded_inputs, decoded_labels))[0], np.all(inputs==labels))
                 outputs = model(**batch)
                 loss = outputs.loss
                 # We keep track of the loss at each epoch
@@ -948,17 +996,27 @@ def main():
                 break
 
         model.eval()
-        result_train = evaluate_model(model, tokenizer, accelerator, training_eval_dataloader, args, 
-                                      result_key="train", fsdp_model_copy_for_eval_only=fsdp_model_copy_for_eval_only)
-        result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, 
-                                result_key=None, fsdp_model_copy_for_eval_only=fsdp_model_copy_for_eval_only)
-        result.update(result_train)
-        result["train_loss"] = total_loss.item() / len(train_dataloader)
-        result["epoch"] = epoch
-        result["step"] = completed_steps
-        result["lr"] = optimizer.param_groups[0]['lr']
-        logger.info(result)
-        accelerator.log(result, step=completed_steps)
+        if epoch == args.num_train_epochs - 1:
+            result_train = evaluate_model(model, tokenizer, accelerator, training_eval_dataloader, args, 
+                                          result_key="train", fsdp_model_copy_for_eval_only=fsdp_model_copy_for_eval_only)
+            result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, 
+                                    result_key=None, fsdp_model_copy_for_eval_only=fsdp_model_copy_for_eval_only)
+            result.update(result_train)
+            result["train_loss"] = total_loss.item() / len(train_dataloader)
+            result["epoch"] = epoch
+            result["step"] = completed_steps
+            result["lr"] = optimizer.param_groups[0]['lr']
+            logger.info(result)
+            accelerator.log(result, step=completed_steps)
+            
+        else:
+            result = dict()
+            result["train_loss"] = total_loss.item() / len(train_dataloader)
+            result["epoch"] = epoch
+            result["step"] = completed_steps
+            result["lr"] = optimizer.param_groups[0]['lr']
+            logger.info(result)
+            accelerator.log(result, step=completed_steps)
 
         if args.checkpointing_steps == "epoch":
             save_model_and_state(args.save_model, accelerator, model, tokenizer, args.output_dir, sub_dir=f"epoch_{epoch}", fsdp=args.fsdp,use_8bit_optim=args.use_8bit_optim, result_dict=None)
