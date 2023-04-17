@@ -576,7 +576,7 @@ def get_dataloaders(args, accelerator, tokenizer, model):
     if args.token_weights:
         token_weights = Dataset.load_from_disk(args.token_weights)
         token_weights = token_weights.map(lambda x: {"proba": [a*b for a, b in zip(x["proba1"], x["proba2"])]})
-    train_dataset = concatenate_datasets([train_dataset, token_weights], axis=1)
+        train_dataset = concatenate_datasets([train_dataset, token_weights], axis=1)
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 1):
         logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
