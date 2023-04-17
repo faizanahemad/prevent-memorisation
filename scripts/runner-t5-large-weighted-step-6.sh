@@ -31,6 +31,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --fsdp\
     --gradient_checkpointing_enable\
     --max_source_length 512 --max_target_length 128\
+    --token_weights outputs/${MODEL}/${dataset}/fold1_fold2_combined \
     --seed 42
     
 # --fraction_dataset --n_dataset_fractions 2 --train_fraction_number 1 \

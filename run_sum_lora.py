@@ -43,11 +43,14 @@ from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from copy import deepcopy
+from torch.nn import CrossEntropyLoss
 import gc
 from accelerate import FullyShardedDataParallelPlugin
 from peft import LoraConfig, PeftConfig, PeftModel, get_peft_model, prepare_model_for_int8_training,  TaskType
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
 from peft.utils.other import fsdp_auto_wrap_policy
+from datasets import Dataset
+from datasets import concatenate_datasets
 
 import transformers
 from transformers import (
@@ -102,6 +105,12 @@ def parse_args():
         type=str,
         default=None,
         help="The configuration name of the dataset to use (via the datasets library).",
+    )
+    parser.add_argument(
+        "--token_weights",
+        type=str,
+        default=None,
+        help="Output Token weights for our experiment",
     )
     parser.add_argument(
         "--fraction_dataset", action="store_true", help="Train over a smaller fraction of the dataset"
@@ -345,6 +354,15 @@ def parse_args():
     parser.add_argument(
         "--use_clm", action="store_true", help="Use Causal LMs like GPT2"
     )
+    parser.add_argument(
+        "--generate_proba", action="store_true", help="Generate Probas for our dataset"
+    )
+    parser.add_argument(
+        '--proba_store',
+        type=str,
+        default=None,
+        help='Path to Store generated Probas dict'
+    )
     args = parser.parse_args()
 
     # Sanity checks
@@ -365,6 +383,11 @@ def parse_args():
         
     if args.use_clm:
         assert args.pad_to_max_length
+    if args.generate_proba:
+        assert args.proba_store
+        
+    if args.token_weights:
+        assert os.path.exists(args.token_weights) and os.path.isdir(args.token_weights)
 
     return args
 
@@ -550,6 +573,10 @@ def get_dataloaders(args, accelerator, tokenizer, model):
             train_dataset = train_dataset.select(range(our_fraction * fraction_size, min((our_fraction+1) * fraction_size, len(train_dataset) - 1)))
             
 
+    if args.token_weights:
+        token_weights = Dataset.load_from_disk(args.token_weights)
+        token_weights = token_weights.map(lambda x: {"proba": [a*b for a, b in zip(x["proba1"], x["proba2"])]})
+    train_dataset = concatenate_datasets([train_dataset, token_weights], axis=1)
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 1):
         logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
@@ -562,8 +589,6 @@ def get_dataloaders(args, accelerator, tokenizer, model):
         pad_to_multiple_of=8 if accelerator.use_fp16 else None,
     )
 
-    
-
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
     )
@@ -573,6 +598,37 @@ def get_dataloaders(args, accelerator, tokenizer, model):
     eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
     logger.info(f"  Num Train examples = {len(train_dataset)}, Num Eval Examples = {len(eval_dataset)}")
     return train_dataloader, training_eval_dataloader, eval_dataloader
+
+def generate_proba(model, tokenizer, accelerator, dataloader, args):
+    assert (hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin is None) or not hasattr(accelerator.state, "deepspeed_plugin")
+    progress_bar = tqdm(range(len(dataloader)), desc="generate Logits", disable=not accelerator.is_local_main_process)
+    all_proba = []
+    model.eval()
+    for step, batch in enumerate(dataloader):
+        with torch.no_grad():
+            if args.use_clm:
+                batch = {k.replace("clm_", ""): v for k, v in batch.items() if "clm_" in k}
+            outputs = model(**batch)
+        if args.use_clm:
+            input_ids = batch["input_ids"].reshape(-1)
+        else:
+            input_ids = batch["labels"].reshape(-1)
+        logits = outputs.logits.softmax(dim=-1)
+        b, s = logits.shape[:2]
+        logits = logits.reshape(-1, logits.shape[-1])
+        proba = logits[torch.arange(b*s), input_ids].reshape(b, s)
+        proba = accelerator.gather_for_metrics(proba).cpu()
+        if accelerator.is_main_process:
+            all_proba.append(proba)
+        progress_bar.update(1)
+    if accelerator.is_main_process:
+        all_proba = torch.cat(all_proba, 0).tolist()
+        ds = Dataset.from_dict({"proba": all_proba})
+        for index in random.sample(range(len(ds)), 1):
+            logger.info(f"Sample {index} of the training set: {ds[index]}.")
+        logger.info(f"  Num examples = {len(ds)}")
+        ds.save_to_disk(args.proba_store)
+    
 
 
 def evaluate_model(model, tokenizer, accelerator, dataloader, args, result_key: str, fsdp_model_copy_for_eval_only=None):
@@ -867,6 +923,10 @@ def main():
         model, optimizer, train_dataloader, training_eval_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
             model, optimizer, train_dataloader, training_eval_dataloader, eval_dataloader, lr_scheduler
         )
+        
+    if args.generate_proba:
+        generate_proba(model, tokenizer, accelerator, training_eval_dataloader, args)
+        exit()
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -949,9 +1009,22 @@ def main():
 
             with accelerator.accumulate(model):
                 if args.use_clm:
-                    batch = {k.replace("clm_", ""): v for k, v in batch.items() if "clm_" in k}
+                    clm_params = {k.replace("clm_", ""): v for k, v in batch.items() if "clm_" in k}
+                    non_clm_params = {k: v for k, v in batch.items() if k not in clm_params}
+                    batch = clm_params
+                    batch.update(non_clm_params)
+                token_proba = batch["proba"] if "proba" in batch else None
+                _ = [batch.pop(k, None) for k in ["proba", "proba1", "proba2"]]
                 outputs = model(**batch)
-                loss = outputs.loss
+                if args.token_weights:
+                    lm_logits = outputs.logits
+                    loss_fct = CrossEntropyLoss(ignore_index=-100, reduction="none")
+                    # move labels to correct device to enable PP
+                    labels = batch["labels"]
+                    loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
+                    loss = (token_proba.view(-1) * loss).mean()
+                else:
+                    loss = outputs.loss
                 # We keep track of the loss at each epoch
                 loss_record = loss.detach().float()
                 total_loss += loss_record
@@ -992,7 +1065,8 @@ def main():
             accelerator.log(result, step=completed_steps)
             
         else:
-            result = dict()
+            result = evaluate_model(model, tokenizer, accelerator, eval_dataloader, args, 
+                                    result_key=None, fsdp_model_copy_for_eval_only=fsdp_model_copy_for_eval_only)
             result["train_loss"] = total_loss.item() / len(train_dataloader)
             result["epoch"] = epoch
             result["step"] = completed_steps
