@@ -28,9 +28,9 @@ def proba_v3_6(x, y):
 
 def map_fn(row):
     probas = list(zip(*[row[f"proba{FOLD}"] for FOLD in range(N_FOLD)]))
-    proba_v2 = [np.product(d) for d in probas]
-    proba_v1 = [1 - (max_pairwise_distance(d)**1) for d in probas]
-    proba_v3 = [(1 - (max_pairwise_distance(d)**1)) * np.min(d) for d in probas]
+    proba_v2 = [max(0.001, np.product(d)) for d in probas]
+    proba_v1 = [max(0.001, 1 - (max_pairwise_distance(d)**1)) for d in probas]
+    proba_v3 = [max(0.001, (1 - (max_pairwise_distance(d)**1)) * np.min(d)) for d in probas]
     return {"proba_v1": proba_v1, "proba_v2": proba_v2, "proba_v3": proba_v3}
 
 concatenated_dataset = concatenated_dataset.map(map_fn)
