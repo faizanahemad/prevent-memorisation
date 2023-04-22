@@ -1,10 +1,13 @@
-# l25
-MODEL="t5-large"
-bs=8
-dataset="samsum"
+MODEL=$1
+dataset=$2
+bs=$3
+
 max_grad_norm=1.0
-gradient_accumulation_steps=4
-epochs=10
+gradient_accumulation_steps=$4
+epochs=$5
+num_warmup_steps=$6
+N_FOLD=$7
+proba_column=$8
 
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
@@ -23,15 +26,20 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --gradient_accumulation_steps $gradient_accumulation_steps \
     --learning_rate 1e-4 \
     --weight_decay 0.1 \
-    --num_warmup_steps 140 \
+    --num_warmup_steps $num_warmup_steps \
     --lr_scheduler_type cosine \
     --num_train_epochs $epochs \
     --report_to wandb \
     --output_dir outputs/${MODEL}/${dataset} \
     --fsdp\
     --gradient_checkpointing_enable\
-    --fraction_dataset --n_dataset_fractions 2 --train_fraction_number 1 \
+    --token_weights outputs/${MODEL}/${dataset}/folds_${N_FOLD}_combined \
+    --token_weights_column $proba_column \
     --max_source_length 512 --max_target_length 128\
     --seed 42
     
-# --fraction_dataset --n_dataset_fractions 2 --train_fraction_number 1 \
+mkdir -p outputs/${MODEL}/${dataset}/folds_${N_FOLD}_combined
+mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/folds_${N_FOLD}_combined
+mv outputs/${MODEL}/${dataset}/all_results.json outputs/${MODEL}/${dataset}/folds_${N_FOLD}_combined
+mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/${dataset}/folds_${N_FOLD}_combined
+mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/

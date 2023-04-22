@@ -113,6 +113,12 @@ def parse_args():
         help="Output Token weights for our experiment",
     )
     parser.add_argument(
+        "--token_weights_column",
+        type=str,
+        default=None,
+        help="Output Token weights for our experiment",
+    )
+    parser.add_argument(
         "--fraction_dataset", action="store_true", help="Train over a smaller fraction of the dataset"
     )
     parser.add_argument(
@@ -388,6 +394,7 @@ def parse_args():
         
     if args.token_weights:
         assert os.path.exists(args.token_weights) and os.path.isdir(args.token_weights)
+        assert args.token_weights_column
 
     return args
 
@@ -575,7 +582,10 @@ def get_dataloaders(args, accelerator, tokenizer, model):
 
     if args.token_weights:
         token_weights = Dataset.load_from_disk(args.token_weights)
-        token_weights = token_weights.map(lambda x: {"proba": [a*b for a, b in zip(x["proba1"], x["proba2"])]})
+        # token_weights = token_weights.map(lambda x: {"proba": [a*b for a, b in zip(x["proba1"], x["proba2"])]})
+        token_weights = token_weights.rename_column(args.token_weights_column, "proba")
+        cols_to_remove = set(token_weights.column_names) - {"proba"}
+        token_weights = token_weights.remove_columns(list(cols_to_remove))
         train_dataset = concatenate_datasets([train_dataset, token_weights], axis=1)
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 1):
@@ -1093,9 +1103,6 @@ def get_state_dict(unwrapped_model, accelerator, fsdp=False, rank0_only=True):
             return state
     else:
         state_dict = accelerator.get_state_dict(unwrapped_model)
-        # torch.save(state_dict, os.path.join(os.getcwd(), "temp.pt"))
-        # state_dict = torch.load(os.path.join(os.getcwd(), "temp.pt"), map_location="cpu")
-        # state_dict = {k:v.cpu() for k, v in state_dict.items()}
         return state_dict
     
 def save_model_and_state(save_model, accelerator, model, tokenizer, output_dir, sub_dir="", fsdp=False, use_8bit_optim=False, result_dict=None):
