@@ -35,7 +35,14 @@ def map_fn(row):
     # fn = lambda x, y: np.sqrt(x*y) * (1 - np.abs(x-y)) ** 2
 
     proba_v4 = [max(0.001, np.power(np.product(d), (1/len(d))) * (1 - (max_pairwise_distance(d)))**2 ) for d in probas]
-    return {"proba_v1": proba_v1, "proba_v2": proba_v2, "proba_v3": proba_v3, "proba_v4": proba_v4}
+    
+    # func = lambda x, y: np.sqrt(x*y) * (1 - np.abs(x-y))
+    proba_v5 = [max(0.001, np.power(np.product(d), (1/len(d))) * (1 - (max_pairwise_distance(d))) ** 1 ) for d in probas]
+    
+    # func = lambda x, y: (x+y)/2 * (1 - np.abs(x-y))
+    proba_v6 = [max(0.001, np.mean(d) * (1 - (max_pairwise_distance(d)))**2 ) for d in probas]
+    proba_v7 = [max(0.001, np.mean(d) * (1 - (max_pairwise_distance(d)))**1 ) for d in probas]
+    return {"proba_v1": proba_v1, "proba_v2": proba_v2, "proba_v3": proba_v3, "proba_v4": proba_v4, "proba_v5": proba_v5, "proba_v6": proba_v6, "proba_v7": proba_v7 }
 
 concatenated_dataset = concatenated_dataset.map(map_fn)
 
