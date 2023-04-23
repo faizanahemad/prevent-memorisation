@@ -38,8 +38,8 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --max_source_length 512 --max_target_length 128\
     --seed 42
     
-mkdir -p outputs/${MODEL}/${dataset}/folds_${N_FOLD}_combined
-mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/folds_${N_FOLD}_combined
-mv outputs/${MODEL}/${dataset}/all_results.json outputs/${MODEL}/${dataset}/folds_${N_FOLD}_combined
-mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/${dataset}/folds_${N_FOLD}_combined
-mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
+mkdir -p outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
+mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
+mv outputs/${MODEL}/${dataset}/all_results.json outputs/${MODEL}/folds_${N_FOLD}_${proba_column}_combined
+mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/folds_${N_FOLD}_${proba_column}_combined
+mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined

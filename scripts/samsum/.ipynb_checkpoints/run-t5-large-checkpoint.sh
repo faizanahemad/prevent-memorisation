@@ -6,7 +6,7 @@ baseline_epochs=10
 epochs=15
 combined_epochs=10
 num_warmup_steps=150
-proba_column="proba_v3"
+proba_column="proba_v4"
 N_FOLDS=2
 
 scripts/run-baseline.sh ${MODEL} ${dataset} ${bs} ${gradient_accumulation_steps} ${baseline_epochs} ${num_warmup_steps}
