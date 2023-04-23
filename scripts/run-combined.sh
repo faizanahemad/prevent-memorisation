@@ -40,6 +40,6 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     
 mkdir -p outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
 mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
-mv outputs/${MODEL}/${dataset}/all_results.json outputs/${MODEL}/folds_${N_FOLD}_${proba_column}_combined
-mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/folds_${N_FOLD}_${proba_column}_combined
+mv outputs/${MODEL}/${dataset}/all_results.json outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
+mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
 mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
