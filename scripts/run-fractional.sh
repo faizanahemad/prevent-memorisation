@@ -37,8 +37,14 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --max_source_length 512 --max_target_length 128\
     --seed 42
     
+mkdir -p outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}
+mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}
+mv outputs/${MODEL}/${dataset}/all_results.json outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
+mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
+mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
+    
 CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
-    --mixed_precision=bf16 --use_fsdp --fsdp_offload_params true --fsdp_auto_wrap_policy "TRANSFORMER_BASED_WRAP" --fsdp_sharding_strategy 1 --fsdp_transformer_layer_cls_to_wrap "T5Block" --fsdp_backward_prefetch_policy "BACKWARD_PRE" --fsdp_state_dict_type "FULL_STATE_DICT"\
+    --mixed_precision=bf16 --use_fsdp --fsdp_offload_params false --fsdp_auto_wrap_policy "TRANSFORMER_BASED_WRAP" --fsdp_sharding_strategy 1 --fsdp_transformer_layer_cls_to_wrap "T5Block" --fsdp_backward_prefetch_policy "BACKWARD_PRE" --fsdp_state_dict_type "FULL_STATE_DICT"\
     run_sum_lora.py \
     --model_name_or_path $MODEL \
     --dataset_name $dataset  \
@@ -57,10 +63,5 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --max_source_length 512 --max_target_length 128\
     --gradient_checkpointing_enable\
     --fsdp\
-    --seed 42 --load_model outputs/${MODEL}/${dataset}/model.pt --generate_proba --proba_store outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}
+    --seed 42 --load_model outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/model.pt --generate_proba --proba_store outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}
     
-mkdir -p outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}
-mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}
-mv outputs/${MODEL}/${dataset}/all_results.json outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
-mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
-mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/

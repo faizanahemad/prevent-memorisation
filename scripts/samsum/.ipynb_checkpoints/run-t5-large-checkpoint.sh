@@ -1,10 +1,10 @@
 MODEL="t5-large"
-bs=12
+bs=4
 dataset="samsum"
-gradient_accumulation_steps=4
+gradient_accumulation_steps=8
 baseline_epochs=10
 epochs=15
-combined_epochs=10
+combined_epochs=12
 num_warmup_steps=150
 proba_column="proba_v4"
 N_FOLDS=2

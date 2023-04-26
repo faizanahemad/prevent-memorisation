@@ -22,7 +22,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --pad_to_max_length \
     --max_grad_norm $max_grad_norm \
     --per_device_train_batch_size $bs \
-    --per_device_eval_batch_size $((bs * 2)) \
+    --per_device_eval_batch_size $bs \
     --gradient_accumulation_steps $gradient_accumulation_steps \
     --learning_rate 1e-4 \
     --weight_decay 0.1 \
@@ -35,6 +35,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --gradient_checkpointing_enable\
     --token_weights outputs/${MODEL}/${dataset}/folds_${N_FOLD}_combined \
     --token_weights_column $proba_column \
+    --num_beams 5 \
     --max_source_length 512 --max_target_length 128\
     --seed 42
     
