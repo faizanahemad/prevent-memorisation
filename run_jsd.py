@@ -233,34 +233,90 @@ def parse_args():
 
 from run_sum_lora import get_dataloaders
 
+def recursive_detach(t):
+    if torch.is_tensor(t):
+        return t.detach()
+    elif isinstance(t, (list)):
+        return list(map(recursive_detach, t))
+    elif isinstance(t, (tuple)):
+        return tuple(map(recursive_detach, t))
+    elif isinstance(t, (dict)):
+        return {k: recursive_detach(v) for k, v in t.items()}
+    elif t is None:
+        return t
+    else:
+        raise ValueError
+        
+def recursive_to_device(t, device):
+    if torch.is_tensor(t):
+        return t.to(device)
+    elif isinstance(t, (list)):
+        return list([recursive_to_device(x, device) for x in t])
+    elif isinstance(t, (tuple)):
+        return tuple([recursive_to_device(x, device) for x in t])
+    elif isinstance(t, (dict)):
+        return {k: recursive_to_device(v, device) for k, v in t.items()}
+    elif t is None:
+        return t
+    else:
+        raise ValueError
+        
+def recursive_get_size(t):
+    if torch.is_tensor(t):
+        return t.numel()*4
+    elif isinstance(t, (list)):
+        return sum(list(map(recursive_get_size, t)))
+    elif isinstance(t, (tuple)):
+        return sum(tuple(map(recursive_get_size, t)))
+    elif isinstance(t, (dict)):
+        return sum([recursive_get_size(v) for k, v in t.items()])
+    elif t is None:
+        return t
+    else:
+        raise ValueError
 
-def get_three_step_proba(model, labels, input_ids, attention_mask, temperature=1.0, num_samples=1):
+def run_decoder_step(model, input_ids, past_key_values, encoder_hidden_states, attention_mask, actual, num_samples, device):
+    # past_key_values = recursive_to_device(past_key_values, device)
+    decoder_outputs = model.decoder(input_ids=input_ids, past_key_values=past_key_values, encoder_hidden_states=encoder_hidden_states, encoder_attention_mask=attention_mask, use_cache=True,)
+    past_key_values=recursive_detach(decoder_outputs.past_key_values)
+    # past_key_values = recursive_to_device(past_key_values, torch.device("cpu"))
+    sequence_output = decoder_outputs[0]
+    if model.config.tie_word_embeddings:
+        sequence_output = sequence_output * (model.model_dim**-0.5)
+    lm_logits = model.lm_head(sequence_output).softmax(dim=-1).squeeze(0)
+    proba = lm_logits[-1, actual[0, -1]].detach().item()
+    logits = lm_logits[-1].squeeze().detach().cpu().tolist()
+    samples = None
+    if num_samples:
+        samples = (lm_logits[-1]).multinomial(num_samples=num_samples, replacement=True).detach()
+    return {"proba": proba, "logits": logits, "samples": samples, "past_key_values": past_key_values}
+    
+
+def get_three_step_proba(model, labels, input_ids, attention_mask, temperature=1.0, num_samples=10):
     original_lables = deepcopy(labels)
     labels = model._shift_right(labels)
     probas = []
     logits = []
     with torch.no_grad():
         encoder_output = model.encoder(input_ids, attention_mask)
-        encoder_hidden_states = encoder_output[0]
+        encoder_hidden_states = encoder_output[0].detach()
         past_key_values = None
         
         for i in range(labels.shape[-1]-3):
             lbl = labels[..., :(i+1)]
             actual = original_lables[..., :(i+1)]
-            decoder_outputs = model.decoder(input_ids=lbl, past_key_values=past_key_values, encoder_hidden_states=encoder_hidden_states, encoder_attention_mask=attention_mask, use_cache=True,)
-            pkv=decoder_outputs.past_key_values
-            sequence_output = decoder_outputs[0]
-            if model.config.tie_word_embeddings:
-                sequence_output = sequence_output * (model.model_dim**-0.5)
-            lm_logits = model.lm_head(sequence_output).softmax(dim=-1).squeeze(0)
-            
-
+            decoder_step_out = run_decoder_step(model, lbl, past_key_values, encoder_hidden_states, attention_mask, actual, num_samples, labels.device)
+            if i % 8 == 0:
+                past_key_values=None
+            else:
+                past_key_values = None # decoder_step_out["past_key_values"]
             if i == 0:
-                proba = lm_logits[-1, actual[0, -1]].item()
-                logits.append(lm_logits[-1].squeeze().cpu().tolist())
+                proba = decoder_step_out["proba"]
+                logits.append(decoder_step_out["logits"])
                 probas.append(proba)
-                
-            index = (lm_logits[-1]).multinomial(num_samples=num_samples, replacement=True)
+            
+            index = decoder_step_out["samples"]
+            del decoder_step_out
             # print(actual[..., -1], proba, index)
             actual = original_lables[..., :(i+2)]
             new_probas = []
@@ -270,31 +326,26 @@ def get_three_step_proba(model, labels, input_ids, attention_mask, temperature=1
             for idx in index:
 
                 lbx = torch.cat([lbl, idx.unsqueeze(0).unsqueeze(0)], dim=-1)
-                decoder_outputs = model.decoder(input_ids=lbx, past_key_values=pkv, encoder_hidden_states=encoder_hidden_states, encoder_attention_mask=attention_mask, use_cache=True,)
-                sequence_output = decoder_outputs[0]
-                if model.config.tie_word_embeddings:
-                    sequence_output = sequence_output * (model.model_dim**-0.5)
-                lm_logits = model.lm_head(sequence_output).softmax(dim=-1).squeeze(0)
+                decoder_step_out = run_decoder_step(model, lbx, past_key_values, encoder_hidden_states, attention_mask,actual, num_samples, labels.device)
                 if i == 0:
-                    proba = lm_logits[-1, actual[0, -1]].item()
+                    proba = decoder_step_out["proba"]
                     new_probas.append(proba)
-                    new_logits.append(lm_logits[-1].squeeze().cpu().tolist())
-                pkv_v2 = decoder_outputs.past_key_values
-                
-                index_l2 = (lm_logits[-1]).multinomial(num_samples=num_samples, replacement=True)
+                    new_logits.append(decoder_step_out["logits"])
+                pkv_v2 = decoder_step_out["past_key_values"]
+                index_l2 = decoder_step_out["samples"]
+                del decoder_step_out
                 actual = original_lables[..., :(i+3)]
                 
-                for idx in index_l2:
-
-                    lby = torch.cat([lbx, idx.unsqueeze(0).unsqueeze(0)], dim=-1)
-                    decoder_outputs = model.decoder(input_ids=lby, past_key_values=pkv_v2, encoder_hidden_states=encoder_hidden_states, encoder_attention_mask=attention_mask, use_cache=True,)
-                    sequence_output = decoder_outputs[0]
-                    if model.config.tie_word_embeddings:
-                        sequence_output = sequence_output * (model.model_dim**-0.5)
-                    lm_logits = model.lm_head(sequence_output).softmax(dim=-1).squeeze(0)
-                    proba = lm_logits[-1, actual[0, -1]].item()
+                for jdx in index_l2:
+                    lby = torch.cat([lbx, jdx.unsqueeze(0).unsqueeze(0)], dim=-1)
+                    decoder_step_out = run_decoder_step(model, lby, pkv_v2, encoder_hidden_states, attention_mask,actual, 0, labels.device)
+                    proba = decoder_step_out["proba"]
                     probas_l2.append(proba)
-                    logits_l2.append(lm_logits[-1].squeeze().cpu().tolist())
+                    logits_l2.append(decoder_step_out["logits"])
+                    del decoder_step_out
+                del pkv_v2
+            # torch.cuda.empty_cache()
+                
                 
                 
             if i == 0:
@@ -302,8 +353,7 @@ def get_three_step_proba(model, labels, input_ids, attention_mask, temperature=1
                 logits.append(np.mean(new_logits, axis=0))
             probas.append(np.mean(probas_l2))
             logits.append(np.mean(logits_l2, axis=0))
-            past_key_values = pkv
-    return {"probas": probas, "logits": torch.tensor(np.array(logits))}
+    return {"probas": probas, "logits": torch.tensor(np.array(logits)).detach()}
 
 def calculate_jsd(x, y):
     jsd_m = 0.5 * (x + y)
@@ -315,9 +365,9 @@ def generate_proba(model_1, model_2, tokenizer, accelerator, dataloader, args):
     args.per_device_eval_batch_size == 1
     assert "t5" in args.model_name_or_path.lower()
     progress_bar = tqdm(range(len(dataloader)), desc="generate Logits", disable=not accelerator.is_local_main_process)
-    # model_1 = accelerator.unwrap_model(model_1)
+    model_1 = accelerator.unwrap_model(model_1)
     model_1 = (model_1.module if hasattr(model_1, "module") else model_1)
-    # model_2 = accelerator.unwrap_model(model_2)
+    model_2 = accelerator.unwrap_model(model_2)
     model_2 = (model_2.module if hasattr(model_2, "module") else model_2)
     all_m1_proba = []
     all_m2_proba = []
@@ -335,9 +385,11 @@ def generate_proba(model_1, model_2, tokenizer, accelerator, dataloader, args):
         labels = batch["labels"]
         input_ids = batch["input_ids"]
         attention_mask = batch["attention_mask"]
-        m1_out = get_three_step_proba(model_1, labels, input_ids, attention_mask,)
+        with torch.no_grad():
+            m1_out = get_three_step_proba(model_1, labels, input_ids, attention_mask,)
         m1_proba = m1_out["probas"]
-        m2_out = get_three_step_proba(model_2, labels, input_ids, attention_mask,)
+        with torch.no_grad():
+            m2_out = get_three_step_proba(model_2, labels, input_ids, attention_mask,)
         m2_proba = m2_out["probas"]
         
         m1_logits = m1_out["logits"].to(accelerator.device)
@@ -466,10 +518,6 @@ def main():
             "You are instantiating a new tokenizer from scratch. This is not supported by this script."
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
-    if args.use_clm:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-        tokenizer.padding_side = "left"
 
     if args.model_name_or_path:
         if args.use_clm:
@@ -507,6 +555,11 @@ def main():
     model_2.load_state_dict(state_dict)
     del state_dict
     
+    for p in model_1.parameters():
+        p.requires_grad = False
+    for p in model_2.parameters():
+        p.requires_grad = False
+    
         
      
     if hasattr(accelerator.state, "fsdp_plugin") and accelerator.state.fsdp_plugin:
@@ -516,12 +569,12 @@ def main():
 
     
 
-    model_1, training_eval_dataloader = accelerator.prepare(model_1, training_eval_dataloader)
-    # model_1, model_2, training_eval_dataloader = accelerator.prepare(model_1, model_2, training_eval_dataloader)
+    # model_1, training_eval_dataloader = accelerator.prepare(model_1, training_eval_dataloader)
+    model_1, model_2, training_eval_dataloader = accelerator.prepare(model_1, model_2, training_eval_dataloader)
     # training_eval_dataloader = accelerator.prepare(training_eval_dataloader)
     # model_1 = model_1.to(accelerator.device)
     # model_2 = model_2.to(accelerator.device)
-    generate_proba(model_1, model_1, tokenizer, accelerator, training_eval_dataloader, args)
+    generate_proba(model_1, model_2, tokenizer, accelerator, training_eval_dataloader, args)
     exit()
     accelerator.end_training()
 
