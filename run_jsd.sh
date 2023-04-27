@@ -19,7 +19,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --output_dir outputs/${MODEL}/${dataset} \
     --max_source_length 512 --max_target_length 128\
     --proba_store outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}_jsd \
-    --per_device_eval_batch_size 1 --pad_to_max_length \
+    --per_device_eval_batch_size 16 --pad_to_max_length \
     --seed 42
     
     
