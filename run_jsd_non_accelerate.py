@@ -274,30 +274,27 @@ def recursive_get_size(t):
         return t
     else:
         raise ValueError
-
+        
 
 def run_decoder_step(model, input_ids, past_key_values, encoder_hidden_states, attention_mask, actual, num_samples, device):
-    # past_key_values = recursive_to_device(past_key_values, device)
+    past_key_values = recursive_to_device(past_key_values, device)
     decoder_outputs = model.decoder(input_ids=input_ids, past_key_values=past_key_values, encoder_hidden_states=encoder_hidden_states, encoder_attention_mask=attention_mask, use_cache=True,)
-    past_key_values = decoder_outputs.past_key_values
-    # past_key_values= recursive_detach(decoder_outputs.past_key_values)
-    # past_key_values = recursive_to_device(past_key_values, torch.device("cpu"))
-    
-    # past_key_values = recursive_to_device(past_key_values, torch.device("cpu"))
-    # print("%.3f" % (recursive_get_size(past_key_values)/1_000_000))
+    past_key_values=recursive_detach(decoder_outputs.past_key_values)
+    past_key_values = recursive_to_device(past_key_values, torch.device("cpu"))
+    print("%.4f" % (sys.getsizeof(past_key_values)/1_000_000), "%.4f" % (recursive_get_size(past_key_values)/1_000_000))
     sequence_output = decoder_outputs[0]
     if model.config.tie_word_embeddings:
         sequence_output = sequence_output * (model.model_dim**-0.5)
-    lm_logits = model.lm_head(sequence_output).softmax(dim=-1)
-    proba = torch.gather(lm_logits[:, -1], 1, actual[:, -1].unsqueeze(1))
-    # proba = lm_logits[:, -1, actual[0, -1]].detach().cpu()
-    logits = lm_logits[:, -1].detach()
+    lm_logits = model.lm_head(sequence_output).softmax(dim=-1).squeeze(0)
+    proba = lm_logits[-1, actual[0, -1]].detach().item()
+    logits = lm_logits[-1].squeeze().detach().cpu().tolist()
     samples = None
     if num_samples:
-        samples = (lm_logits[:, -1]/10.0).multinomial(num_samples=num_samples, replacement=True).detach()
+        samples = (lm_logits[-1]).multinomial(num_samples=num_samples, replacement=True).detach()
     return {"proba": proba, "logits": logits, "samples": samples, "past_key_values": past_key_values}
     
-def get_two_step_proba(model, labels, input_ids, attention_mask, temperature=1.0, num_samples=20):
+
+def get_three_step_proba(model, labels, input_ids, attention_mask, temperature=1.0, num_samples=1):
     original_lables = deepcopy(labels)
     labels = model._shift_right(labels)
     probas = []
@@ -307,14 +304,14 @@ def get_two_step_proba(model, labels, input_ids, attention_mask, temperature=1.0
         encoder_hidden_states = encoder_output[0].detach()
         past_key_values = None
         
-        for i in range(labels.shape[-1]-2):
+        for i in range(labels.shape[-1]-3):
             lbl = labels[..., :(i+1)]
             actual = original_lables[..., :(i+1)]
-            decoder_step_out = run_decoder_step(model, lbl, None, encoder_hidden_states, attention_mask, actual, num_samples, labels.device)
-            past_key_values = decoder_step_out["past_key_values"]
+            decoder_step_out = run_decoder_step(model, lbl, past_key_values, encoder_hidden_states, attention_mask, actual, num_samples, labels.device)
+            past_key_values=decoder_step_out["past_key_values"]
             if i == 0:
                 proba = decoder_step_out["proba"]
-                logits.append(decoder_step_out["logits"].unsqueeze(-1))
+                logits.append(decoder_step_out["logits"])
                 probas.append(proba)
             
             index = decoder_step_out["samples"]
@@ -325,24 +322,37 @@ def get_two_step_proba(model, labels, input_ids, attention_mask, temperature=1.0
             new_logits = []
             probas_l2 = []
             logits_l2 = []
-            for j in range(index.shape[1]):
-                idx = index[:, j].unsqueeze(-1)
-                lbx = torch.cat([lbl, idx], dim=-1)
+            for idx in index:
+
+                lbx = torch.cat([lbl, idx.unsqueeze(0).unsqueeze(0)], dim=-1)
                 decoder_step_out = run_decoder_step(model, lbx, past_key_values, encoder_hidden_states, attention_mask,actual, num_samples, labels.device)
-                
-                proba = decoder_step_out["proba"]
-                new_probas.append(proba)
-                new_logits.append(decoder_step_out["logits"].unsqueeze(-1))
+                if i == 0:
+                    proba = decoder_step_out["proba"]
+                    new_probas.append(proba)
+                    new_logits.append(decoder_step_out["logits"])
+                pkv_v2 = decoder_step_out["past_key_values"]
+                index_l2 = decoder_step_out["samples"]
                 del decoder_step_out
-            
-            new_probas = torch.cat(new_probas, dim=1).mean(-1).unsqueeze(-1)
-            new_logits = torch.cat(new_logits, dim=-1).mean(-1).unsqueeze(-1)
-            probas.append(new_probas) # 
-            logits.append(new_logits)
-            
-        probas = torch.cat(probas, dim=1)
-        logits = torch.cat(logits, dim=-1).transpose(1,2)
-    return {"probas": probas, "logits": logits.detach()}
+                actual = original_lables[..., :(i+3)]
+                
+                for idx in index_l2:
+                    lby = torch.cat([lbx, idx.unsqueeze(0).unsqueeze(0)], dim=-1)
+                    decoder_step_out = run_decoder_step(model, lby, pkv_v2, encoder_hidden_states, attention_mask,actual, 0, labels.device)
+                    proba = decoder_step_out["proba"]
+                    probas_l2.append(proba)
+                    logits_l2.append(decoder_step_out["logits"])
+                    del decoder_step_out
+                del pkv_v2
+            torch.cuda.empty_cache()
+                
+                
+                
+            if i == 0:
+                probas.append(np.mean(new_probas))
+                logits.append(np.mean(new_logits, axis=0))
+            probas.append(np.mean(probas_l2))
+            logits.append(np.mean(logits_l2, axis=0))
+    return {"probas": probas, "logits": torch.tensor(np.array(logits)).detach()}
 
 def calculate_jsd(x, y):
     jsd_m = 0.5 * (x + y)
@@ -350,12 +360,13 @@ def calculate_jsd(x, y):
     jsd = jsd.sum(-1)
     return jsd
 
-def generate_proba(model_1, model_2, tokenizer, accelerator, dataloader, args):
+def generate_proba(model_1, model_2, tokenizer, dataloader, args):
+    args.per_device_eval_batch_size == 1
     assert "t5" in args.model_name_or_path.lower()
-    progress_bar = tqdm(range(len(dataloader)), desc="generate Logits", disable=not accelerator.is_local_main_process)
-    # model_1 = accelerator.unwrap_model(model_1)
+    progress_bar = tqdm(range(len(dataloader)), desc="generate Logits", disable=False)
+
     model_1 = (model_1.module if hasattr(model_1, "module") else model_1)
-    # model_2 = accelerator.unwrap_model(model_2)
+
     model_2 = (model_2.module if hasattr(model_2, "module") else model_2)
     all_m1_proba = []
     all_m2_proba = []
@@ -366,81 +377,77 @@ def generate_proba(model_1, model_2, tokenizer, accelerator, dataloader, args):
     assert "t5" in args.model_name_or_path.lower()
     model_1.eval()
     model_2.eval()
+    max_source_length = args.max_source_length
+    max_target_length = args.max_target_length
     
     for step, batch in enumerate(dataloader):
-        labels = batch["labels"]
-        input_ids = batch["input_ids"]
-        attention_mask = batch["attention_mask"]
+        labels = batch["labels"].to("cuda")
+        input_ids = batch["input_ids"].to("cuda")
+        attention_mask = batch["attention_mask"].to("cuda")
         with torch.no_grad():
-            m1_out = get_two_step_proba(model_1, labels, input_ids, attention_mask,)
+            m1_out = get_three_step_proba(model_1, labels, input_ids, attention_mask,)
         m1_proba = m1_out["probas"]
         with torch.no_grad():
-            m2_out = get_two_step_proba(model_2, labels, input_ids, attention_mask,)
+            m2_out = get_three_step_proba(model_2, labels, input_ids, attention_mask,)
         m2_proba = m2_out["probas"]
         
-        m1_logits = m1_out["logits"].to(accelerator.device)
-        m2_logits = m2_out["logits"].to(accelerator.device)
+        m1_logits = m1_out["logits"].to("cuda")
+        m2_logits = m2_out["logits"].to("cuda")
         jsd = calculate_jsd(m1_logits, m2_logits)
-        max_jsd = jsd.max(-1).values.max(-1).values.unsqueeze(-1)
-        min_jsd = jsd.min(-1).values.min(-1).values.unsqueeze(-1)
+        max_jsd = jsd.max()
+        min_jsd = jsd.min()
         inverted_jsd = (max_jsd - jsd + min_jsd) / (max_jsd - min_jsd)
         inverse_jsd = 1. / (2*jsd + 0.05)
         inverse_jsd = (inverse_jsd - inverse_jsd.min()) / (inverse_jsd.max() - inverse_jsd.min())
         
         # pad
-        m1_proba = m1_proba.to(accelerator.device)
-        m2_proba = m2_proba.to(accelerator.device)
-        jsd = jsd.to(accelerator.device)
+        m1_proba = m1_proba + [0.0] * (max_target_length - len(m1_proba))
+        m1_proba = torch.tensor(m1_proba).to("cuda")
         
-        inverted_jsd = inverted_jsd.to(accelerator.device)
+        m2_proba = m2_proba + [0.0] * (max_target_length - len(m2_proba))
+        m2_proba = torch.tensor(m2_proba).to("cuda")
         
-        inverse_jsd = inverse_jsd.to(accelerator.device)
+        jsd = jsd.tolist()
+        jsd = jsd + [0.0] * (max_target_length - len(jsd))
+        jsd = torch.tensor(jsd).to("cuda")
         
-        jsd = accelerator.gather_for_metrics(jsd).cpu()
-        inverted_jsd = accelerator.gather_for_metrics(inverted_jsd).cpu()
-        inverse_jsd = accelerator.gather_for_metrics(inverse_jsd).cpu()
-        m1_proba = accelerator.gather_for_metrics(m1_proba).cpu()
-        m2_proba = accelerator.gather_for_metrics(m2_proba).cpu()
-        if accelerator.is_main_process:
-            all_m1_proba.append(m1_proba)
-            all_m2_proba.append(m2_proba)
-            all_jsd.append(jsd)
-            all_inverse_jsd.append(inverse_jsd)
-            all_inverted_jsd.append(inverted_jsd)
+        inverted_jsd = inverted_jsd.tolist()
+        inverted_jsd = inverted_jsd + [0.0] * (max_target_length - len(inverted_jsd))
+        inverted_jsd = torch.tensor(inverted_jsd).to("cuda")
+        
+        inverse_jsd = inverse_jsd.tolist()
+        inverse_jsd = inverse_jsd + [0.0] * (max_target_length - len(inverse_jsd))
+        inverse_jsd = torch.tensor(inverse_jsd).to("cuda")
+        
+        
+
+        all_m1_proba.append(m1_proba.cpu())
+        all_m2_proba.append(m2_proba.cpu())
+        all_jsd.append(jsd.cpu())
+        all_inverse_jsd.append(inverse_jsd.cpu())
+        all_inverted_jsd.append(inverted_jsd.cpu())
         progress_bar.update(1)
-    if accelerator.is_main_process:
-        all_m1_proba = torch.cat(all_m1_proba, 0).tolist()
-        all_m2_proba = torch.cat(all_m2_proba, 0).tolist()
-        all_jsd = torch.cat(all_jsd, 0).tolist()
-        all_inverse_jsd = torch.cat(all_inverse_jsd, 0).tolist()
-        all_inverted_jsd = torch.cat(all_inverted_jsd, 0).tolist()
-        
-        ds = Dataset.from_dict({"proba0": all_m1_proba, "proba1": all_m2_proba, 
-                                "jsd": all_jsd, "inverse_jsd": all_inverse_jsd, 
-                                "inverted_jsd": all_inverted_jsd})
-        for index in random.sample(range(len(ds)), 1):
-            logger.info(f"Sample {index} of the training set: {ds[index]}.")
-        logger.info(f"  Num examples = {len(ds)}")
-        ds.save_to_disk(args.proba_store)
+
+    all_m1_proba = torch.cat(all_m1_proba, 0).tolist()
+    all_m2_proba = torch.cat(all_m2_proba, 0).tolist()
+    all_jsd = torch.cat(all_jsd, 0).tolist()
+    all_inverse_jsd = torch.cat(all_inverse_jsd, 0).tolist()
+    all_inverted_jsd = torch.cat(all_inverted_jsd, 0).tolist()
+
+    ds = Dataset.from_dict({"proba0": all_m1_proba, "proba1": all_m2_proba, 
+                            "jsd": all_jsd, "inverse_jsd": all_inverse_jsd, 
+                            "inverted_jsd": all_inverted_jsd})
+    for index in random.sample(range(len(ds)), 1):
+        logger.info(f"Sample {index} of the training set: {ds[index]}.")
+    logger.info(f"  Num examples = {len(ds)}")
+    ds.save_to_disk(args.proba_store)
     
 
 def main():
     args = parse_args()
 
-    # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
     # in the environment
-    accelerator_log_kwargs = {}
-    accelerator_log_kwargs["log_with"] = args.report_to
-    accelerator_log_kwargs["project_dir"] = args.output_dir
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
-    fsdp_params = None
-
-    accelerator = Accelerator(gradient_accumulation_steps=1, fsdp_plugin=fsdp_params, kwargs_handlers=[ddp_kwargs], **accelerator_log_kwargs)
-    if accelerator.is_main_process:
-        os.makedirs(args.output_dir, exist_ok=True)
-        os.makedirs(os.path.join(args.output_dir, args.model_name_or_path, args.dataset_name), exist_ok=True)
-    # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
@@ -448,10 +455,8 @@ def main():
         handlers=[
             logging.StreamHandler(sys.stdout),
             logging.FileHandler(os.path.join(args.output_dir, "log.txt"))
-        ] if accelerator.is_main_process else []
+        ] 
     )
-    logger.info(accelerator.state, main_process_only=False)
-    
     if args.source_prefix is None and args.model_name_or_path in [
         "t5-small",
         "t5-base",
@@ -467,23 +472,9 @@ def main():
         )
         args.source_prefix = 'summarize: '
     
-    if accelerator.is_local_main_process:
-        datasets.utils.logging.set_verbosity_warning()
-        transformers.utils.logging.set_verbosity_warning()
-    else:
-        datasets.utils.logging.set_verbosity_error()
-        transformers.utils.logging.set_verbosity_error()
-
-    # If passed along, set the training seed now.
     if args.seed is not None:
         set_seed(args.seed)
 
-    accelerator.wait_for_everyone()
-
-    # Load pretrained model and tokenizer
-    #
-    # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
-    # download model & vocab.
     if args.model_name_or_path:
         config = AutoConfig.from_pretrained(args.model_name_or_path)
     
@@ -538,21 +529,35 @@ def main():
     
         
      
-    if hasattr(accelerator.state, "fsdp_plugin") and accelerator.state.fsdp_plugin:
-        logger.info(f"FSDP speed state = {accelerator.state.fsdp_plugin} and FSDP speed config = {str(accelerator.state.fsdp_plugin)}")
-        
-    train_dataloader, training_eval_dataloader, eval_dataloader = get_dataloaders(args, accelerator, tokenizer, model_1)
-
+    from argparse import Namespace
+    from run_sum_lora import Preprocess
+    from transformers import DataCollatorForSeq2Seq
+    preprocess_function = Preprocess("dialogue", "summary", "summarize: ", tokenizer, args)
+    dataset = load_dataset(args.dataset_name)
+    column_names = dataset["train"].column_names
+    train_dataset = dataset["train"].map(
+                preprocess_function,
+                batched=True,
+                num_proc=16,
+                remove_columns=column_names,
+                load_from_cache_file=True,
+                desc="Running tokenizer on dataset",
+            )
+    max_target_length = args.max_target_length
+    label_pad_token_id = -100 if args.ignore_pad_token_for_loss else tokenizer.pad_token_id
+    data_collator = DataCollatorForSeq2Seq(
+            tokenizer,
+            model=model,
+            label_pad_token_id=label_pad_token_id,
+            pad_to_multiple_of=None,
+        )
+    dataloader = DataLoader(
+            train_dataset, collate_fn=data_collator, batch_size=1
+        )
     
-
-    # model_1, training_eval_dataloader = accelerator.prepare(model_1, training_eval_dataloader)
-    # model_1, model_2, training_eval_dataloader = accelerator.prepare(model_1, model_2, training_eval_dataloader)
-    training_eval_dataloader = accelerator.prepare(training_eval_dataloader)
-    model_1 = model_1.to(accelerator.device)
-    model_2 = model_2.to(accelerator.device)
-    generate_proba(model_1, model_2, tokenizer, accelerator, training_eval_dataloader, args)
+    model_1 = model_1.to("cuda")
+    generate_proba(model_1, model_1, tokenizer, dataloader, args)
     exit()
-    accelerator.end_training()
 
 
 if __name__ == "__main__":
