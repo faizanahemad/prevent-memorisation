@@ -7,6 +7,9 @@ gradient_accumulation_steps=$4
 epochs=$5
 num_warmup_steps=$6
 additional_args=$7
+lr=${8}
+weight_decay=${9}
+
 
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
@@ -23,8 +26,8 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --per_device_train_batch_size $bs \
     --per_device_eval_batch_size $bs \
     --gradient_accumulation_steps $gradient_accumulation_steps \
-    --learning_rate 1e-4 \
-    --weight_decay 0.1 \
+    --learning_rate $lr \
+    --weight_decay ${weight_decay} \
     --num_warmup_steps $num_warmup_steps \
     --lr_scheduler_type cosine \
     --num_train_epochs $epochs \
@@ -42,3 +45,5 @@ mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/baseline
 mv outputs/${MODEL}/${dataset}/all_results.json outputs/${MODEL}/${dataset}/baseline
 mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/${dataset}/baseline
 mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/baseline
+mv outputs/${MODEL}/${dataset}/adapter_config.json outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
+mv outputs/${MODEL}/${dataset}/adapter_model.bin outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/

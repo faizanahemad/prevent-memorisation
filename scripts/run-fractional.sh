@@ -9,6 +9,9 @@ num_warmup_steps=$6
 N_FOLD=$7
 FOLD=$8
 additional_args=$9
+lr=${10}
+weight_decay=${11}
+
 
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
@@ -25,8 +28,8 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --per_device_train_batch_size $bs \
     --per_device_eval_batch_size $bs \
     --gradient_accumulation_steps $gradient_accumulation_steps \
-    --learning_rate 1e-4 \
-    --weight_decay 0.1 \
+    --learning_rate $lr \
+    --weight_decay ${weight_decay} \
     --num_warmup_steps $num_warmup_steps \
     --lr_scheduler_type cosine \
     --num_train_epochs $epochs \
@@ -44,6 +47,8 @@ mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/fold_${N_FOL
 mv outputs/${MODEL}/${dataset}/all_results.json outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
 mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
 mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
+mv outputs/${MODEL}/${dataset}/adapter_config.json outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
+mv outputs/${MODEL}/${dataset}/adapter_model.bin outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
     
 CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --mixed_precision=bf16 --use_fsdp --fsdp_offload_params false --fsdp_auto_wrap_policy "TRANSFORMER_BASED_WRAP" --fsdp_sharding_strategy 1 --fsdp_transformer_layer_cls_to_wrap "T5Block" --fsdp_backward_prefetch_policy "BACKWARD_PRE" --fsdp_state_dict_type "FULL_STATE_DICT"\
@@ -55,8 +60,8 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --per_device_train_batch_size $bs \
     --per_device_eval_batch_size $bs \
     --gradient_accumulation_steps $gradient_accumulation_steps \
-    --learning_rate 1e-4 \
-    --weight_decay 0.1 \
+    --learning_rate $lr \
+    --weight_decay ${weight_decay} \
     --num_warmup_steps 50 \
     --lr_scheduler_type cosine \
     --num_train_epochs $epochs \

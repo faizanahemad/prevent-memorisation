@@ -10,6 +10,8 @@ N_FOLD=$7
 proba_column=$8
 proba_dataset=$9
 additional_args=${10}
+lr=${11}
+weight_decay=${12}
 
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
@@ -26,8 +28,8 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --per_device_train_batch_size $bs \
     --per_device_eval_batch_size $bs \
     --gradient_accumulation_steps $gradient_accumulation_steps \
-    --learning_rate 1e-4 \
-    --weight_decay 0.1 \
+    --learning_rate $lr \
+    --weight_decay ${weight_decay} \
     --num_warmup_steps $num_warmup_steps \
     --lr_scheduler_type cosine \
     --num_train_epochs $epochs \
@@ -47,5 +49,7 @@ mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/folds_${N_FO
 mv outputs/${MODEL}/${dataset}/all_results.json outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
 mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
 mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
+mv outputs/${MODEL}/${dataset}/adapter_config.json outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
+mv outputs/${MODEL}/${dataset}/adapter_model.bin outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
 
 # --load_model outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined/model.pt \
