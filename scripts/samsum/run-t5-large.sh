@@ -11,7 +11,7 @@ num_warmup_steps=180
 N_FOLDS=2
 proba_dataset=outputs/${MODEL}/${dataset}/folds_${N_FOLDS}_combined
 proba_column="proba_v11_cumulative_windowed"
-additional_args=""
+additional_args="--no_additional_args"
 seed=42
 
 # "inverted_jsd" -> 8 epochs

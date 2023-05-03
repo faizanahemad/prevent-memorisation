@@ -363,6 +363,9 @@ def parse_args():
         default=None,
         help='Path to Store generated Probas dict'
     )
+    parser.add_argument(
+        "--no_additional_args", action="store_true", help="Placeholder no use"
+    )
     args = parser.parse_args()
 
     # Sanity checks
