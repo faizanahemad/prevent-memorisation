@@ -9,6 +9,7 @@ num_warmup_steps=$6
 additional_args=$7
 lr=${8}
 weight_decay=${9}
+seed=${10}
 
 
 export WANDB_PROJECT="summarization"
@@ -38,7 +39,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --max_source_length 512 --max_target_length 128\
     --num_beams 5 \
     ${additional_args} \
-    --seed 42
+    --seed $seed
     
 mkdir -p outputs/${MODEL}/${dataset}/baseline
 mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/baseline

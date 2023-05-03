@@ -12,6 +12,7 @@ proba_dataset=$9
 additional_args=${10}
 lr=${11}
 weight_decay=${12}
+seed=${13}
 
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
@@ -42,7 +43,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --token_weights_column $proba_column \
     --num_beams 5 \
     --max_source_length 512 --max_target_length 128\
-    --seed 42
+    --seed $seed
     
 mkdir -p outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
 mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined

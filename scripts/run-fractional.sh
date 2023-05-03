@@ -11,6 +11,7 @@ FOLD=$8
 additional_args=$9
 lr=${10}
 weight_decay=${11}
+seed=${12}
 
 
 export WANDB_PROJECT="summarization"
@@ -40,7 +41,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --fraction_dataset --n_dataset_fractions $N_FOLD --train_fraction_number $FOLD \
     --max_source_length 512 --max_target_length 128\
     ${additional_args} \
-    --seed 42
+    --seed $seed
     
 mkdir -p outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}
 mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}
@@ -71,5 +72,5 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --gradient_checkpointing_enable\
     --fsdp\
     ${additional_args} \
-    --seed 42 --load_model outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/model.pt --generate_proba --proba_store outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}
+    --seed $seed --load_model outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/model.pt --generate_proba --proba_store outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}
     
