@@ -337,12 +337,6 @@ def parse_args():
         help='Path to the model state dict'
     )
     parser.add_argument(
-        '--load_lora_model',
-        type=str,
-        default=None,
-        help='Path to the LoRA model state dict'
-    )
-    parser.add_argument(
         '--save_model',
         type=str,
         default="model.pt",
@@ -718,7 +712,7 @@ def main():
     accelerator_log_kwargs = {}
     accelerator_log_kwargs["log_with"] = args.report_to
     accelerator_log_kwargs["project_dir"] = args.output_dir
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=args.use_lora or args.load_lora_model)
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=args.use_lora)
     if args.fsdp:
         fsdp_params = FullyShardedDataParallelPlugin(use_orig_params=True)
     else:
@@ -820,21 +814,27 @@ def main():
         
     if args.load_model:
         if args.use_lora:
-            peft_config = PeftConfig.from_pretrained(args.load_model)
-            model = PeftModel.from_pretrained(model, args.load_model)
-            # state_dict = torch.load(args.load_model, map_location='cpu')
-            # model.load_state_dict(state_dict)
+            lora_dir = args.load_model
+            if not os.path.isdir(lora_dir):
+                lora_dir = os.path.dirname(lora_dir)
+            if os.path.isfile(os.path.join(lora_dir, "adapter_config.json")) and os.path.isfile(os.path.join(lora_dir, "adapter_model.bin")):
+                peft_config = PeftConfig.from_pretrained(lora_dir)
+                model = PeftModel.from_pretrained(model, lora_dir)
+            else:
+                peft_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM if args.use_clm else TaskType.SEQ_2_SEQ_LM, 
+                    inference_mode=False, r=args.lora_rank, lora_alpha=args.lora_alpha, lora_dropout=0.1
+                )
+                model = get_peft_model(model, peft_config)
+                state_dict = torch.load(args.load_model, map_location='cpu')
+                model.load_state_dict(state_dict)
         else:
             state_dict = torch.load(args.load_model, map_location='cpu')
             model.load_state_dict(state_dict)
             del state_dict
         
-    if args.load_lora_model:
-        peft_config = PeftConfig.from_pretrained(args.load_lora_model)
-        model = PeftModel.from_pretrained(model, args.load_lora_model)
         
-        
-    if args.use_lora:
+    if args.use_lora and not args.load_model:
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM if args.use_clm else TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=args.lora_rank, lora_alpha=args.lora_alpha, lora_dropout=0.1
         )
@@ -865,7 +865,7 @@ def main():
         assert (hasattr(accelerator.state, "deepspeed_plugin") and accelerator.state.deepspeed_plugin is None) or not hasattr(accelerator.state, "deepspeed_plugin")
         fsdp_model_copy_for_eval_only = deepcopy(model).to("cpu")
         if args.fsdp:
-            if args.use_lora or args.load_lora_model:
+            if args.use_lora:
                 accelerator.state.fsdp_plugin.auto_wrap_policy = fsdp_auto_wrap_policy(model)
             model = accelerator.prepare(model)
             
