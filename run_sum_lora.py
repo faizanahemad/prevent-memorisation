@@ -820,8 +820,10 @@ def main():
         
     if args.load_model:
         if args.use_lora:
-            peft_config = PeftConfig.from_pretrained(args.load_lora_model)
-            model = PeftModel.from_pretrained(model, args.load_lora_model)
+            peft_config = PeftConfig.from_pretrained(args.load_model)
+            model = PeftModel.from_pretrained(model, args.load_model)
+            # state_dict = torch.load(args.load_model, map_location='cpu')
+            # model.load_state_dict(state_dict)
         else:
             state_dict = torch.load(args.load_model, map_location='cpu')
             model.load_state_dict(state_dict)
