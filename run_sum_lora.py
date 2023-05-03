@@ -590,6 +590,7 @@ def get_dataloaders(args, accelerator, tokenizer, model):
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 1):
         logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
+        
 
     label_pad_token_id = -100 if args.ignore_pad_token_for_loss else tokenizer.pad_token_id
     data_collator = DataCollatorForSeq2Seq(
@@ -915,8 +916,8 @@ def main():
         lr_scheduler = get_scheduler(
             name=args.lr_scheduler_type,
             optimizer=optimizer,
-            num_warmup_steps=args.num_warmup_steps * args.gradient_accumulation_steps,
-            num_training_steps=args.max_train_steps * args.gradient_accumulation_steps,
+            num_warmup_steps=args.num_warmup_steps,
+            num_training_steps=args.max_train_steps,
         )
     else:
         lr_scheduler = DummyScheduler(
@@ -1026,13 +1027,21 @@ def main():
                 token_proba = batch["proba"] if "proba" in batch else None
                 _ = [batch.pop(k, None) for k in ["proba", "proba1", "proba2"]]
                 outputs = model(**batch)
+                non_token_loss = outputs.loss.item()
+                # print(f"NT LOSS = {non_token_loss}")
                 if args.token_weights:
                     lm_logits = outputs.logits
                     loss_fct = CrossEntropyLoss(ignore_index=-100, reduction="none")
                     # move labels to correct device to enable PP
                     labels = batch["labels"]
                     loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
-                    loss = (token_proba.view(-1) * loss).mean()
+                    element_wise_loss = loss
+                    loss = (token_proba.view(-1) * loss)
+                    element_wise_loss_token_mul = loss
+                    loss = loss.mean()
+                    # print(f"Weighted LOSS = {loss.item()}")
+                    # if np.isnan(loss.item()):
+                    #     logger.info(list(zip(element_wise_loss.tolist(), element_wise_loss_token_mul.tolist(), token_proba.view(-1).tolist(), labels.view(-1).tolist())))
                 else:
                     loss = outputs.loss
                 # We keep track of the loss at each epoch
@@ -1045,7 +1054,7 @@ def main():
                 if not accelerator.optimizer_step_was_skipped:
                     lr_scheduler.step()
                 optimizer.zero_grad()
-                progress_bar.set_description(f"Epoch {epoch} - Completed Step {completed_steps}, step {step} - LR: {optimizer.param_groups[0]['lr']:.2e} - loss: {loss_record.item():.4f}")  
+                progress_bar.set_description(f"Epoch {epoch} - Completed Step {completed_steps}, step {step} - LR: {optimizer.param_groups[0]['lr']:.2e} - loss: {loss_record.item():.4f} - NT loss: {non_token_loss:.4f}")  
                 if np.isnan(float(loss_record.item())):
                     raise ValueError(f"Epoch {epoch} - Completed Step {completed_steps}, step {step} - LR: {optimizer.param_groups[0]['lr']:.2e} - loss: {loss_record.item():.4f}")
 

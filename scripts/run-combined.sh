@@ -8,6 +8,7 @@ epochs=$5
 num_warmup_steps=$6
 N_FOLD=$7
 proba_column=$8
+proba_dataset=$9
 
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
@@ -33,7 +34,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --output_dir outputs/${MODEL}/${dataset} \
     --fsdp\
     --gradient_checkpointing_enable\
-    --token_weights outputs/${MODEL}/${dataset}/folds_${N_FOLD}_combined \
+    --token_weights  $proba_dataset \
     --token_weights_column $proba_column \
     --num_beams 5 \
     --max_source_length 512 --max_target_length 128\
@@ -44,3 +45,5 @@ mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/folds_${N_FO
 mv outputs/${MODEL}/${dataset}/all_results.json outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
 mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
 mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
+
+# --load_model outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined/model.pt \

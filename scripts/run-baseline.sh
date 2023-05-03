@@ -20,7 +20,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --pad_to_max_length \
     --max_grad_norm $max_grad_norm \
     --per_device_train_batch_size $bs \
-    --per_device_eval_batch_size $((bs * 2)) \
+    --per_device_eval_batch_size $bs \
     --gradient_accumulation_steps $gradient_accumulation_steps \
     --learning_rate 1e-4 \
     --weight_decay 0.1 \
