@@ -819,9 +819,13 @@ def main():
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
         
     if args.load_model:
-        state_dict = torch.load(args.load_model, map_location='cpu')
-        model.load_state_dict(state_dict)
-        del state_dict
+        if args.use_lora:
+            peft_config = PeftConfig.from_pretrained(args.load_lora_model)
+            model = PeftModel.from_pretrained(model, args.load_lora_model)
+        else:
+            state_dict = torch.load(args.load_model, map_location='cpu')
+            model.load_state_dict(state_dict)
+            del state_dict
         
     if args.load_lora_model:
         peft_config = PeftConfig.from_pretrained(args.load_lora_model)
