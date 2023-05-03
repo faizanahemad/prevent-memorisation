@@ -6,6 +6,7 @@ max_grad_norm=1.0
 gradient_accumulation_steps=$4
 epochs=$5
 num_warmup_steps=$6
+additional_args=$7
 
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
@@ -33,6 +34,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --gradient_checkpointing_enable\
     --max_source_length 512 --max_target_length 128\
     --num_beams 5 \
+    ${additional_args} \
     --seed 42
     
 mkdir -p outputs/${MODEL}/${dataset}/baseline

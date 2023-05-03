@@ -9,6 +9,7 @@ num_warmup_steps=$6
 N_FOLD=$7
 proba_column=$8
 proba_dataset=$9
+additional_args=${10}
 
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
@@ -33,6 +34,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --report_to wandb \
     --output_dir outputs/${MODEL}/${dataset} \
     --fsdp\
+    ${additional_args} \
     --gradient_checkpointing_enable\
     --token_weights  $proba_dataset \
     --token_weights_column $proba_column \

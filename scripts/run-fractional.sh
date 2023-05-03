@@ -8,6 +8,7 @@ epochs=$5
 num_warmup_steps=$6
 N_FOLD=$7
 FOLD=$8
+additional_args=$9
 
 export WANDB_PROJECT="summarization"
 export WANDB_NAME="${MODEL}_${dataset}"
@@ -22,7 +23,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --pad_to_max_length \
     --max_grad_norm $max_grad_norm \
     --per_device_train_batch_size $bs \
-    --per_device_eval_batch_size $((bs * 2)) \
+    --per_device_eval_batch_size $bs \
     --gradient_accumulation_steps $gradient_accumulation_steps \
     --learning_rate 1e-4 \
     --weight_decay 0.1 \
@@ -35,6 +36,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --gradient_checkpointing_enable\
     --fraction_dataset --n_dataset_fractions $N_FOLD --train_fraction_number $FOLD \
     --max_source_length 512 --max_target_length 128\
+    ${additional_args} \
     --seed 42
     
 mkdir -p outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}
@@ -63,5 +65,6 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --max_source_length 512 --max_target_length 128\
     --gradient_checkpointing_enable\
     --fsdp\
+    ${additional_args} \
     --seed 42 --load_model outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/model.pt --generate_proba --proba_store outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}
     
