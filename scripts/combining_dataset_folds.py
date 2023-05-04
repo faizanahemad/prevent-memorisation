@@ -115,6 +115,38 @@ def map_fn(row):
     
     proba_v12 = [np.exp(np.min(d) * (1 - (max_pairwise_distance(d)))) - 0.9999  for d in probas]
     
+    
+    window = 8
+    probas_cumulative = list(zip(*[cumulative_product_window(row[f"proba{FOLD}"], window) for FOLD in range(N_FOLD)]))
+    proba_v10_cumulative_w8 = [np.sqrt(np.min(d)) for d in probas_cumulative]
+    proba_v11_cumulative_w8 = [np.exp(np.min(d)) - 0.9999 for d in probas_cumulative]
+    proba_v12_cumulative_w8 = [np.exp(np.min(d) * (1 - (max_pairwise_distance(d)))) - 0.9999  for d in probas_cumulative]
+    
+    proba_v10_cumulative_windowed_w8 = windowed_applicator(proba_v10_cumulative_w8, window)
+    proba_v11_cumulative_windowed_w8 = windowed_applicator(proba_v11_cumulative_w8, window)
+    proba_v12_cumulative_windowed_w8 = windowed_applicator(proba_v12_cumulative_w8, window)
+    
+    window = 5
+    probas_cumulative = list(zip(*[cumulative_product_window(row[f"proba{FOLD}"], window) for FOLD in range(N_FOLD)]))
+    proba_v10_cumulative_w5 = [np.sqrt(np.min(d)) for d in probas_cumulative]
+    proba_v11_cumulative_w5 = [np.exp(np.min(d)) - 0.9999 for d in probas_cumulative]
+    proba_v12_cumulative_w5 = [np.exp(np.min(d) * (1 - (max_pairwise_distance(d)))) - 0.9999  for d in probas_cumulative]
+    
+    proba_v10_cumulative_windowed_w5 = windowed_applicator(proba_v10_cumulative_w5, window)
+    proba_v11_cumulative_windowed_w5 = windowed_applicator(proba_v11_cumulative_w5, window)
+    proba_v12_cumulative_windowed_w5 = windowed_applicator(proba_v12_cumulative_w5, window)
+    
+    window = 10
+    probas_cumulative = list(zip(*[cumulative_product_window(row[f"proba{FOLD}"], window) for FOLD in range(N_FOLD)]))
+    proba_v10_cumulative_w10 = [np.sqrt(np.min(d)) for d in probas_cumulative]
+    proba_v11_cumulative_w10 = [np.exp(np.min(d)) - 0.9999 for d in probas_cumulative]
+    proba_v12_cumulative_w10 = [np.exp(np.min(d) * (1 - (max_pairwise_distance(d)))) - 0.9999  for d in probas_cumulative]
+    
+    proba_v10_cumulative_windowed_w10 = windowed_applicator(proba_v10_cumulative_w10, window)
+    proba_v11_cumulative_windowed_w10 = windowed_applicator(proba_v11_cumulative_w10, window)
+    proba_v12_cumulative_windowed_w10 = windowed_applicator(proba_v12_cumulative_w10, window)
+    
+    
     window = 3
     probas_cumulative = list(zip(*[cumulative_product_window(row[f"proba{FOLD}"], window) for FOLD in range(N_FOLD)]))
     proba_v4_cumulative = [max(0.001, np.power(np.product(d), (1/len(d))) * (1 - (max_pairwise_distance(d)))**2 ) for d in probas_cumulative]
@@ -177,7 +209,19 @@ def map_fn(row):
             "proba_v12_cumulative_windowed_w2":proba_v12_cumulative_windowed_w2, 
             "proba_v12_cumulative_windowed": proba_v12_cumulative_windowed, 
             "proba_v12_cumulative_w2": proba_v12_cumulative_w2, 
-            "proba_v12_cumulative": proba_v12_cumulative
+            "proba_v12_cumulative": proba_v12_cumulative,
+            
+            "proba_v10_cumulative_windowed_w5": proba_v10_cumulative_windowed_w5,
+            "proba_v11_cumulative_windowed_w5": proba_v11_cumulative_windowed_w5,
+            "proba_v12_cumulative_windowed_w5": proba_v12_cumulative_windowed_w5,
+            
+            "proba_v10_cumulative_windowed_w8": proba_v10_cumulative_windowed_w8,
+            "proba_v11_cumulative_windowed_w8": proba_v11_cumulative_windowed_w8,
+            "proba_v12_cumulative_windowed_w8": proba_v12_cumulative_windowed_w8,
+            
+            "proba_v10_cumulative_windowed_w10": proba_v10_cumulative_windowed_w10,
+            "proba_v11_cumulative_windowed_w10": proba_v11_cumulative_windowed_w10,
+            "proba_v12_cumulative_windowed_w10": proba_v12_cumulative_windowed_w10
            }
 
 concatenated_dataset = concatenated_dataset.map(map_fn)
