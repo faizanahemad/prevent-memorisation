@@ -50,7 +50,7 @@ mv outputs/${MODEL}/${dataset}/model.pt outputs/${MODEL}/${dataset}/folds_${N_FO
 mv outputs/${MODEL}/${dataset}/all_results.json outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
 mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
 mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
-mv outputs/${MODEL}/${dataset}/adapter_config.json outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
-mv outputs/${MODEL}/${dataset}/adapter_model.bin outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
+mv outputs/${MODEL}/${dataset}/adapter_config.json outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
+mv outputs/${MODEL}/${dataset}/adapter_model.bin outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
 
 # --load_model outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined/model.pt \
