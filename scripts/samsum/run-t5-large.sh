@@ -6,11 +6,11 @@ dataset="samsum"
 gradient_accumulation_steps=8
 baseline_epochs=10
 epochs=15
-combined_epochs=13
+combined_epochs=8
 num_warmup_steps=180
 N_FOLDS=2
 proba_dataset=outputs/${MODEL}/${dataset}/folds_${N_FOLDS}_combined
-proba_column="proba_v11_cumulative_windowed"
+proba_column="proba_v10_cumulative_logsig_windowed_w8"
 additional_args="--no_additional_args"
 seed=42
 
