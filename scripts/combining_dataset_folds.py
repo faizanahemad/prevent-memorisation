@@ -112,25 +112,25 @@ def sigmoid_x_minus_x_mean(arr):
     sigm = 1 / (1 + np.exp(-1 * arr))
     return sigm
     
-def map_fn(row):
+def map_fn_old(row):
     probas = list(zip(*[row[f"proba{FOLD}"] for FOLD in range(N_FOLD)]))
-    proba_v2 = [max(0.001, np.product(d)) for d in probas]
-    proba_v1 = [max(0.001, 1 - (max_pairwise_distance(d))) for d in probas]
-    proba_v3 = [max(0.001, (1 - (max_pairwise_distance(d))) * np.min(d)) for d in probas]
+#     proba_v2 = [max(0.001, np.product(d)) for d in probas]
+#     proba_v1 = [max(0.001, 1 - (max_pairwise_distance(d))) for d in probas]
+#     proba_v3 = [max(0.001, (1 - (max_pairwise_distance(d))) * np.min(d)) for d in probas]
     
-    # fn = lambda x, y: np.sqrt(x*y) * (1 - np.abs(x-y)) ** 2
+#     # fn = lambda x, y: np.sqrt(x*y) * (1 - np.abs(x-y)) ** 2
 
     proba_v4 = [max(0.001, np.power(np.product(d), (1/len(d))) * (1 - (max_pairwise_distance(d)))**2 ) for d in probas]
     
     # func = lambda x, y: np.sqrt(x*y) * (1 - np.abs(x-y))
-    proba_v5 = [max(0.001, np.power(np.product(d), (1/len(d))) * (1 - (max_pairwise_distance(d))) ** 1 ) for d in probas]
+#     proba_v5 = [max(0.001, np.power(np.product(d), (1/len(d))) * (1 - (max_pairwise_distance(d))) ** 1 ) for d in probas]
     
-    # func = lambda x, y: (x+y)/2 * (1 - np.abs(x-y))
-    proba_v6 = [max(0.001, np.mean(d) * (1 - (max_pairwise_distance(d)))**2 ) for d in probas]
+#     # func = lambda x, y: (x+y)/2 * (1 - np.abs(x-y))
+#     proba_v6 = [max(0.001, np.mean(d) * (1 - (max_pairwise_distance(d)))**2 ) for d in probas]
     proba_v7 = [max(0.001, np.mean(d) * (1 - (max_pairwise_distance(d)))**1 ) for d in probas]
-    proba_v8 = [max(0.001, np.product(d) * (1 - (max_pairwise_distance(d)))**2 ) for d in probas]
+#     proba_v8 = [max(0.001, np.product(d) * (1 - (max_pairwise_distance(d)))**2 ) for d in probas]
     
-    proba_v9 = fit_in_zero_one_range_min_max([np.sqrt(np.min(d))  for d in probas])
+#     proba_v9 = fit_in_zero_one_range_min_max([np.sqrt(np.min(d))  for d in probas])
     proba_v10 = [np.sqrt(np.min(d))  for d in probas]
     
     proba_v11 = [np.exp(np.min(d)) - 0.9999  for d in probas]
@@ -141,43 +141,47 @@ def map_fn(row):
     
     window = 8
     probas_cumulative = list(zip(*[cumulative_product_window(row[f"proba{FOLD}"], window) for FOLD in range(N_FOLD)]))
-    proba_v10_cumulative_w8 = [np.sqrt(np.min(d)) for d in probas_cumulative]
-    proba_v11_cumulative_w8 = [np.exp(np.min(d)) - 0.9999 for d in probas_cumulative]
+    proba_v10_cumulative_w8 = [np.power(np.min(d), (2/window)) for d in probas_cumulative]
+    # proba_v11_cumulative_w8 = [np.exp(np.min(d)) - 0.9999 for d in probas_cumulative]
     proba_v12_cumulative_w8 = [np.exp(np.min(d) * (1 - (max_pairwise_distance(d)))) - 0.9999  for d in probas_cumulative]
-    
+    proba_v13_cumulative_w8 = [np.power(np.min(d), (1/window)) for d in probas_cumulative]
+    proba_v14_cumulative_w8 = [np.power(np.min(d), (1/window)) * (1 - (max_pairwise_distance(d))) for d in probas_cumulative]
     
     proba_v10_cumulative_windowed_w8 = windowed_applicator(proba_v10_cumulative_w8, window)
-    proba_v11_cumulative_windowed_w8 = windowed_applicator(proba_v11_cumulative_w8, window)
+    # proba_v11_cumulative_windowed_w8 = windowed_applicator(proba_v11_cumulative_w8, window)
     proba_v12_cumulative_windowed_w8 = windowed_applicator(proba_v12_cumulative_w8, window)
+    proba_v13_cumulative_windowed_w8 = windowed_applicator(proba_v13_cumulative_w8, window)
+    proba_v14_cumulative_windowed_w8 = windowed_applicator(proba_v14_cumulative_w8, window)
     
-    proba_v10_cumulative_logsig_windowed_w8 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_w8)), window)
-    proba_v11_cumulative_logsig_windowed_w8 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_w8)), window)
-    proba_v12_cumulative_logsig_windowed_w8 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_w8)), window)
     
-    proba_v10_cumulative_log_windowed_sig_w8 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v10_cumulative_w8), window))
-    proba_v11_cumulative_log_windowed_sig_w8 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v11_cumulative_w8), window))
-    proba_v12_cumulative_log_windowed_sig_w8 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v12_cumulative_w8), window))
+#     proba_v10_cumulative_logsig_windowed_w8 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_w8)), window)
+#     proba_v11_cumulative_logsig_windowed_w8 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_w8)), window)
+#     proba_v12_cumulative_logsig_windowed_w8 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_w8)), window)
     
-    proba_v10_cumulative_windowed_logsig_w8 = sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_windowed_w8))
-    proba_v11_cumulative_windowed_logsig_w8 = sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_windowed_w8))
-    proba_v12_cumulative_windowed_logsig_w8 = sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_windowed_w8))
-    data_dict.update({
-        "proba_v10_cumulative_logsig_windowed_w8": proba_v10_cumulative_logsig_windowed_w8,
-        "proba_v11_cumulative_logsig_windowed_w8": proba_v11_cumulative_logsig_windowed_w8,
-        "proba_v12_cumulative_logsig_windowed_w8": proba_v12_cumulative_logsig_windowed_w8,
-        "proba_v10_cumulative_log_windowed_sig_w8": proba_v10_cumulative_log_windowed_sig_w8,
-        "proba_v11_cumulative_log_windowed_sig_w8": proba_v11_cumulative_log_windowed_sig_w8,
-        "proba_v12_cumulative_log_windowed_sig_w8": proba_v12_cumulative_log_windowed_sig_w8,
-        "proba_v10_cumulative_windowed_logsig_w8": proba_v10_cumulative_windowed_logsig_w8,
-        "proba_v11_cumulative_windowed_logsig_w8": proba_v11_cumulative_windowed_logsig_w8,
-        "proba_v12_cumulative_windowed_logsig_w8": proba_v12_cumulative_windowed_logsig_w8,
+#     proba_v10_cumulative_log_windowed_sig_w8 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v10_cumulative_w8), window))
+#     proba_v11_cumulative_log_windowed_sig_w8 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v11_cumulative_w8), window))
+#     proba_v12_cumulative_log_windowed_sig_w8 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v12_cumulative_w8), window))
+    
+#     proba_v10_cumulative_windowed_logsig_w8 = sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_windowed_w8))
+#     proba_v11_cumulative_windowed_logsig_w8 = sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_windowed_w8))
+#     proba_v12_cumulative_windowed_logsig_w8 = sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_windowed_w8))
+#     data_dict.update({
+#         "proba_v10_cumulative_logsig_windowed_w8": proba_v10_cumulative_logsig_windowed_w8,
+#         "proba_v11_cumulative_logsig_windowed_w8": proba_v11_cumulative_logsig_windowed_w8,
+#         "proba_v12_cumulative_logsig_windowed_w8": proba_v12_cumulative_logsig_windowed_w8,
+#         "proba_v10_cumulative_log_windowed_sig_w8": proba_v10_cumulative_log_windowed_sig_w8,
+#         "proba_v11_cumulative_log_windowed_sig_w8": proba_v11_cumulative_log_windowed_sig_w8,
+#         "proba_v12_cumulative_log_windowed_sig_w8": proba_v12_cumulative_log_windowed_sig_w8,
+#         "proba_v10_cumulative_windowed_logsig_w8": proba_v10_cumulative_windowed_logsig_w8,
+#         "proba_v11_cumulative_windowed_logsig_w8": proba_v11_cumulative_windowed_logsig_w8,
+#         "proba_v12_cumulative_windowed_logsig_w8": proba_v12_cumulative_windowed_logsig_w8,
         
-    })
+#     })
     
     
     window = 5
     probas_cumulative = list(zip(*[cumulative_product_window(row[f"proba{FOLD}"], window) for FOLD in range(N_FOLD)]))
-    proba_v10_cumulative_w5 = [np.sqrt(np.min(d)) for d in probas_cumulative]
+    proba_v10_cumulative_w5 = [np.power(np.min(d), (2/window)) for d in probas_cumulative]
     proba_v11_cumulative_w5 = [np.exp(np.min(d)) - 0.9999 for d in probas_cumulative]
     proba_v12_cumulative_w5 = [np.exp(np.min(d) * (1 - (max_pairwise_distance(d)))) - 0.9999  for d in probas_cumulative]
     
@@ -186,34 +190,34 @@ def map_fn(row):
     proba_v12_cumulative_windowed_w5 = windowed_applicator(proba_v12_cumulative_w5, window)
     
     
-    proba_v10_cumulative_logsig_windowed_w5 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_w5)), window)
-    proba_v11_cumulative_logsig_windowed_w5 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_w5)), window)
-    proba_v12_cumulative_logsig_windowed_w5 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_w5)), window)
+#     proba_v10_cumulative_logsig_windowed_w5 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_w5)), window)
+#     proba_v11_cumulative_logsig_windowed_w5 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_w5)), window)
+#     proba_v12_cumulative_logsig_windowed_w5 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_w5)), window)
     
-    proba_v10_cumulative_log_windowed_sig_w5 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v10_cumulative_w5), window))
-    proba_v11_cumulative_log_windowed_sig_w5 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v11_cumulative_w5), window))
-    proba_v12_cumulative_log_windowed_sig_w5 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v12_cumulative_w5), window))
+#     proba_v10_cumulative_log_windowed_sig_w5 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v10_cumulative_w5), window))
+#     proba_v11_cumulative_log_windowed_sig_w5 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v11_cumulative_w5), window))
+#     proba_v12_cumulative_log_windowed_sig_w5 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v12_cumulative_w5), window))
     
-    proba_v10_cumulative_windowed_logsig_w5 = sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_windowed_w5))
-    proba_v11_cumulative_windowed_logsig_w5 = sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_windowed_w5))
-    proba_v12_cumulative_windowed_logsig_w5 = sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_windowed_w5))
+#     proba_v10_cumulative_windowed_logsig_w5 = sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_windowed_w5))
+#     proba_v11_cumulative_windowed_logsig_w5 = sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_windowed_w5))
+#     proba_v12_cumulative_windowed_logsig_w5 = sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_windowed_w5))
     
-    data_dict.update({
-        "proba_v10_cumulative_logsig_windowed_w5": proba_v10_cumulative_logsig_windowed_w5,
-        "proba_v11_cumulative_logsig_windowed_w5": proba_v11_cumulative_logsig_windowed_w5,
-        "proba_v12_cumulative_logsig_windowed_w5": proba_v12_cumulative_logsig_windowed_w5,
-        "proba_v10_cumulative_log_windowed_sig_w5": proba_v10_cumulative_log_windowed_sig_w5,
-        "proba_v11_cumulative_log_windowed_sig_w5": proba_v11_cumulative_log_windowed_sig_w5,
-        "proba_v12_cumulative_log_windowed_sig_w5": proba_v12_cumulative_log_windowed_sig_w5,
-        "proba_v10_cumulative_windowed_logsig_w5": proba_v10_cumulative_windowed_logsig_w5,
-        "proba_v11_cumulative_windowed_logsig_w5": proba_v11_cumulative_windowed_logsig_w5,
-        "proba_v12_cumulative_windowed_logsig_w5": proba_v12_cumulative_windowed_logsig_w5,
+#     data_dict.update({
+#         "proba_v10_cumulative_logsig_windowed_w5": proba_v10_cumulative_logsig_windowed_w5,
+#         "proba_v11_cumulative_logsig_windowed_w5": proba_v11_cumulative_logsig_windowed_w5,
+#         "proba_v12_cumulative_logsig_windowed_w5": proba_v12_cumulative_logsig_windowed_w5,
+#         "proba_v10_cumulative_log_windowed_sig_w5": proba_v10_cumulative_log_windowed_sig_w5,
+#         "proba_v11_cumulative_log_windowed_sig_w5": proba_v11_cumulative_log_windowed_sig_w5,
+#         "proba_v12_cumulative_log_windowed_sig_w5": proba_v12_cumulative_log_windowed_sig_w5,
+#         "proba_v10_cumulative_windowed_logsig_w5": proba_v10_cumulative_windowed_logsig_w5,
+#         "proba_v11_cumulative_windowed_logsig_w5": proba_v11_cumulative_windowed_logsig_w5,
+#         "proba_v12_cumulative_windowed_logsig_w5": proba_v12_cumulative_windowed_logsig_w5,
         
-    })
+#     })
     
     window = 10
     probas_cumulative = list(zip(*[cumulative_product_window(row[f"proba{FOLD}"], window) for FOLD in range(N_FOLD)]))
-    proba_v10_cumulative_w10 = [np.sqrt(np.min(d)) for d in probas_cumulative]
+    proba_v10_cumulative_w10 = [np.power(np.min(d), (2/window)) for d in probas_cumulative]
     proba_v11_cumulative_w10 = [np.exp(np.min(d)) - 0.9999 for d in probas_cumulative]
     proba_v12_cumulative_w10 = [np.exp(np.min(d) * (1 - (max_pairwise_distance(d)))) - 0.9999  for d in probas_cumulative]
     
@@ -221,30 +225,30 @@ def map_fn(row):
     proba_v11_cumulative_windowed_w10 = windowed_applicator(proba_v11_cumulative_w10, window)
     proba_v12_cumulative_windowed_w10 = windowed_applicator(proba_v12_cumulative_w10, window)
     
-    proba_v10_cumulative_logsig_windowed_w10 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_w10)), window)
-    proba_v11_cumulative_logsig_windowed_w10 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_w10)), window)
-    proba_v12_cumulative_logsig_windowed_w10 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_w10)), window)
+#     proba_v10_cumulative_logsig_windowed_w10 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_w10)), window)
+#     proba_v11_cumulative_logsig_windowed_w10 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_w10)), window)
+#     proba_v12_cumulative_logsig_windowed_w10 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_w10)), window)
     
-    proba_v10_cumulative_log_windowed_sig_w10 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v10_cumulative_w10), window))
-    proba_v11_cumulative_log_windowed_sig_w10 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v11_cumulative_w10), window))
-    proba_v12_cumulative_log_windowed_sig_w10 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v12_cumulative_w10), window))
+#     proba_v10_cumulative_log_windowed_sig_w10 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v10_cumulative_w10), window))
+#     proba_v11_cumulative_log_windowed_sig_w10 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v11_cumulative_w10), window))
+#     proba_v12_cumulative_log_windowed_sig_w10 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v12_cumulative_w10), window))
     
-    proba_v10_cumulative_windowed_logsig_w10 = sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_windowed_w10))
-    proba_v11_cumulative_windowed_logsig_w10 = sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_windowed_w10))
-    proba_v12_cumulative_windowed_logsig_w10 = sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_windowed_w10))
+#     proba_v10_cumulative_windowed_logsig_w10 = sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_windowed_w10))
+#     proba_v11_cumulative_windowed_logsig_w10 = sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_windowed_w10))
+#     proba_v12_cumulative_windowed_logsig_w10 = sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_windowed_w10))
     
-    data_dict.update({
-        "proba_v10_cumulative_logsig_windowed_w10": proba_v10_cumulative_logsig_windowed_w10,
-        "proba_v11_cumulative_logsig_windowed_w10": proba_v11_cumulative_logsig_windowed_w10,
-        "proba_v12_cumulative_logsig_windowed_w10": proba_v12_cumulative_logsig_windowed_w10,
-        "proba_v10_cumulative_log_windowed_sig_w10": proba_v10_cumulative_log_windowed_sig_w10,
-        "proba_v11_cumulative_log_windowed_sig_w10": proba_v11_cumulative_log_windowed_sig_w10,
-        "proba_v12_cumulative_log_windowed_sig_w10": proba_v12_cumulative_log_windowed_sig_w10,
-        "proba_v10_cumulative_windowed_logsig_w10": proba_v10_cumulative_windowed_logsig_w10,
-        "proba_v11_cumulative_windowed_logsig_w10": proba_v11_cumulative_windowed_logsig_w10,
-        "proba_v12_cumulative_windowed_logsig_w10": proba_v12_cumulative_windowed_logsig_w10,
+#     data_dict.update({
+#         "proba_v10_cumulative_logsig_windowed_w10": proba_v10_cumulative_logsig_windowed_w10,
+#         "proba_v11_cumulative_logsig_windowed_w10": proba_v11_cumulative_logsig_windowed_w10,
+#         "proba_v12_cumulative_logsig_windowed_w10": proba_v12_cumulative_logsig_windowed_w10,
+#         "proba_v10_cumulative_log_windowed_sig_w10": proba_v10_cumulative_log_windowed_sig_w10,
+#         "proba_v11_cumulative_log_windowed_sig_w10": proba_v11_cumulative_log_windowed_sig_w10,
+#         "proba_v12_cumulative_log_windowed_sig_w10": proba_v12_cumulative_log_windowed_sig_w10,
+#         "proba_v10_cumulative_windowed_logsig_w10": proba_v10_cumulative_windowed_logsig_w10,
+#         "proba_v11_cumulative_windowed_logsig_w10": proba_v11_cumulative_windowed_logsig_w10,
+#         "proba_v12_cumulative_windowed_logsig_w10": proba_v12_cumulative_windowed_logsig_w10,
         
-    })
+#     })
     
     
     window = 3
@@ -253,7 +257,7 @@ def map_fn(row):
     proba_v7_cumulative = [max(0.001, np.mean(d) * (1 - (max_pairwise_distance(d)))**1 ) for d in probas_cumulative]
     proba_tv_approx_cumulative = [max(0.001, 1 - 0.5 * (max_pairwise_distance(d)) ) for d in probas_cumulative]
     proba_v9_cumulative = [np.sqrt(np.min(d)) for d in probas_cumulative]
-    proba_v10_cumulative = [np.sqrt(np.min(d)) for d in probas_cumulative]
+    proba_v10_cumulative = [np.power(np.min(d), (2/window)) for d in probas_cumulative]
     proba_v11_cumulative = [np.exp(np.min(d)) - 0.9999 for d in probas_cumulative]
     proba_v12_cumulative = [np.exp(np.min(d) * (1 - (max_pairwise_distance(d)))) - 0.9999  for d in probas_cumulative]
     
@@ -265,30 +269,30 @@ def map_fn(row):
     proba_v11_cumulative_windowed = windowed_applicator(proba_v11_cumulative, window)
     proba_v12_cumulative_windowed = windowed_applicator(proba_v12_cumulative, window)
     
-    proba_v10_cumulative_logsig_windowed = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative)), window)
-    proba_v11_cumulative_logsig_windowed = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative)), window)
-    proba_v12_cumulative_logsig_windowed = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative)), window)
+#     proba_v10_cumulative_logsig_windowed = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative)), window)
+#     proba_v11_cumulative_logsig_windowed = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative)), window)
+#     proba_v12_cumulative_logsig_windowed = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative)), window)
     
-    proba_v10_cumulative_log_windowed_sig = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v10_cumulative), window))
-    proba_v11_cumulative_log_windowed_sig = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v11_cumulative), window))
-    proba_v12_cumulative_log_windowed_sig = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v12_cumulative), window))
+#     proba_v10_cumulative_log_windowed_sig = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v10_cumulative), window))
+#     proba_v11_cumulative_log_windowed_sig = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v11_cumulative), window))
+#     proba_v12_cumulative_log_windowed_sig = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v12_cumulative), window))
     
-    proba_v10_cumulative_windowed_logsig = sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_windowed))
-    proba_v11_cumulative_windowed_logsig = sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_windowed))
-    proba_v12_cumulative_windowed_logsig = sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_windowed))
+#     proba_v10_cumulative_windowed_logsig = sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_windowed))
+#     proba_v11_cumulative_windowed_logsig = sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_windowed))
+#     proba_v12_cumulative_windowed_logsig = sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_windowed))
     
-    data_dict.update({
-        "proba_v10_cumulative_logsig_windowed": proba_v10_cumulative_logsig_windowed,
-        "proba_v11_cumulative_logsig_windowed": proba_v11_cumulative_logsig_windowed,
-        "proba_v12_cumulative_logsig_windowed_": proba_v12_cumulative_logsig_windowed,
-        "proba_v10_cumulative_log_windowed_sig": proba_v10_cumulative_log_windowed_sig,
-        "proba_v11_cumulative_log_windowed_sig": proba_v11_cumulative_log_windowed_sig,
-        "proba_v12_cumulative_log_windowed_sig": proba_v12_cumulative_log_windowed_sig,
-        "proba_v10_cumulative_windowed_logsig": proba_v10_cumulative_windowed_logsig,
-        "proba_v11_cumulative_windowed_logsig": proba_v11_cumulative_windowed_logsig,
-        "proba_v12_cumulative_windowed_logsig": proba_v12_cumulative_windowed_logsig,
+#     data_dict.update({
+#         "proba_v10_cumulative_logsig_windowed": proba_v10_cumulative_logsig_windowed,
+#         "proba_v11_cumulative_logsig_windowed": proba_v11_cumulative_logsig_windowed,
+#         "proba_v12_cumulative_logsig_windowed_": proba_v12_cumulative_logsig_windowed,
+#         "proba_v10_cumulative_log_windowed_sig": proba_v10_cumulative_log_windowed_sig,
+#         "proba_v11_cumulative_log_windowed_sig": proba_v11_cumulative_log_windowed_sig,
+#         "proba_v12_cumulative_log_windowed_sig": proba_v12_cumulative_log_windowed_sig,
+#         "proba_v10_cumulative_windowed_logsig": proba_v10_cumulative_windowed_logsig,
+#         "proba_v11_cumulative_windowed_logsig": proba_v11_cumulative_windowed_logsig,
+#         "proba_v12_cumulative_windowed_logsig": proba_v12_cumulative_windowed_logsig,
         
-    })
+#     })
     
     ####
     window = 2
@@ -297,7 +301,7 @@ def map_fn(row):
     proba_v7_cumulative_w2 = [max(0.001, np.mean(d) * (1 - (max_pairwise_distance(d)))**1 ) for d in probas_cumulative]
     proba_tv_approx_cumulative_w2 = [max(0.001, 1 - 0.5 * (max_pairwise_distance(d)) ) for d in probas_cumulative]
     proba_v9_cumulative_w2 = [np.sqrt(np.min(d)) for d in probas_cumulative]
-    proba_v10_cumulative_w2 = [np.sqrt(np.min(d)) for d in probas_cumulative]
+    proba_v10_cumulative_w2 = [np.power(np.min(d), (2/window)) for d in probas_cumulative]
     proba_v11_cumulative_w2 = [np.exp(np.min(d)) - 0.9999 for d in probas_cumulative]
     proba_v12_cumulative_w2 = [np.exp(np.min(d) * (1 - (max_pairwise_distance(d)))) - 0.9999  for d in probas_cumulative]
     
@@ -309,30 +313,30 @@ def map_fn(row):
     proba_v11_cumulative_windowed_w2 = windowed_applicator(proba_v11_cumulative_w2, window)
     proba_v12_cumulative_windowed_w2 = windowed_applicator(proba_v12_cumulative_w2, window)
     
-    proba_v10_cumulative_logsig_windowed_w2 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_w2)), window)
-    proba_v11_cumulative_logsig_windowed_w2 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_w2)), window)
-    proba_v12_cumulative_logsig_windowed_w2 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_w2)), window)
+#     proba_v10_cumulative_logsig_windowed_w2 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_w2)), window)
+#     proba_v11_cumulative_logsig_windowed_w2 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_w2)), window)
+#     proba_v12_cumulative_logsig_windowed_w2 = windowed_applicator(sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_w2)), window)
     
-    proba_v10_cumulative_log_windowed_sig_w2 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v10_cumulative_w2), window))
-    proba_v11_cumulative_log_windowed_sig_w2 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v11_cumulative_w2), window))
-    proba_v12_cumulative_log_windowed_sig_w2 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v12_cumulative_w2), window))
+#     proba_v10_cumulative_log_windowed_sig_w2 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v10_cumulative_w2), window))
+#     proba_v11_cumulative_log_windowed_sig_w2 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v11_cumulative_w2), window))
+#     proba_v12_cumulative_log_windowed_sig_w2 = sigmoid_x_minus_x_mean(windowed_applicator(np.log(proba_v12_cumulative_w2), window))
     
-    proba_v10_cumulative_windowed_logsig_w2 = sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_windowed_w2))
-    proba_v11_cumulative_windowed_logsig_w2 = sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_windowed_w2))
-    proba_v12_cumulative_windowed_logsig_w2 = sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_windowed_w2))
+#     proba_v10_cumulative_windowed_logsig_w2 = sigmoid_x_minus_x_mean(np.log(proba_v10_cumulative_windowed_w2))
+#     proba_v11_cumulative_windowed_logsig_w2 = sigmoid_x_minus_x_mean(np.log(proba_v11_cumulative_windowed_w2))
+#     proba_v12_cumulative_windowed_logsig_w2 = sigmoid_x_minus_x_mean(np.log(proba_v12_cumulative_windowed_w2))
     
-    data_dict.update({
-        "proba_v10_cumulative_logsig_windowed_w2": proba_v10_cumulative_logsig_windowed_w2,
-        "proba_v11_cumulative_logsig_windowed_w2": proba_v11_cumulative_logsig_windowed_w2,
-        "proba_v12_cumulative_logsig_windowed_w2": proba_v12_cumulative_logsig_windowed_w2,
-        "proba_v10_cumulative_log_windowed_sig_w2": proba_v10_cumulative_log_windowed_sig_w2,
-        "proba_v11_cumulative_log_windowed_sig_w2": proba_v11_cumulative_log_windowed_sig_w2,
-        "proba_v12_cumulative_log_windowed_sig_w2": proba_v12_cumulative_log_windowed_sig_w2,
-        "proba_v10_cumulative_windowed_logsig_w2": proba_v10_cumulative_windowed_logsig_w2,
-        "proba_v11_cumulative_windowed_logsig_w2": proba_v11_cumulative_windowed_logsig_w2,
-        "proba_v12_cumulative_windowed_logsig_w2": proba_v12_cumulative_windowed_logsig_w2,
+#     data_dict.update({
+#         "proba_v10_cumulative_logsig_windowed_w2": proba_v10_cumulative_logsig_windowed_w2,
+#         "proba_v11_cumulative_logsig_windowed_w2": proba_v11_cumulative_logsig_windowed_w2,
+#         "proba_v12_cumulative_logsig_windowed_w2": proba_v12_cumulative_logsig_windowed_w2,
+#         "proba_v10_cumulative_log_windowed_sig_w2": proba_v10_cumulative_log_windowed_sig_w2,
+#         "proba_v11_cumulative_log_windowed_sig_w2": proba_v11_cumulative_log_windowed_sig_w2,
+#         "proba_v12_cumulative_log_windowed_sig_w2": proba_v12_cumulative_log_windowed_sig_w2,
+#         "proba_v10_cumulative_windowed_logsig_w2": proba_v10_cumulative_windowed_logsig_w2,
+#         "proba_v11_cumulative_windowed_logsig_w2": proba_v11_cumulative_windowed_logsig_w2,
+#         "proba_v12_cumulative_windowed_logsig_w2": proba_v12_cumulative_windowed_logsig_w2,
         
-    })
+#     })
     ####
     
     proba_v9_cumulative_w2 = fit_in_zero_one_range_min_max(proba_v9_cumulative_w2)
@@ -374,6 +378,32 @@ def map_fn(row):
     results_dict.update(data_dict)
     # "proba_v1": proba_v1, "proba_v2": proba_v2, "proba_v3": proba_v3,
     # "proba_v5": proba_v5, "proba_v6": proba_v6, "proba_v8": proba_v8,
+    return results_dict
+
+def map_fn(row):
+    probas = list(zip(*[row[f"proba{FOLD}"] for FOLD in range(N_FOLD)]))
+    results_dict = dict()
+    for window in [2,3,5,8,10]:
+        probas_cumulative = list(zip(*[cumulative_product_window(row[f"proba{FOLD}"], window) for FOLD in range(N_FOLD)]))
+        proba_v10_cumulative = [np.power(np.min(d), (2/window)) for d in probas_cumulative]
+        proba_v11_cumulative = [np.power(np.min(d), (2/window))*(1 - (max_pairwise_distance(d))) for d in probas_cumulative]
+        proba_v12_cumulative = [np.exp(np.min(d) * (1 - (max_pairwise_distance(d)))) - 0.9999  for d in probas_cumulative]
+        proba_v13_cumulative = [np.power(np.min(d), (1/window)) for d in probas_cumulative]
+        proba_v14_cumulative = [np.power(np.min(d), (1/window)) * (1 - (max_pairwise_distance(d))) for d in probas_cumulative]
+
+        proba_v10_cumulative_windowed = windowed_applicator(proba_v10_cumulative, window)
+        proba_v11_cumulative_windowed = windowed_applicator(proba_v11_cumulative, window)
+        proba_v12_cumulative_windowed = windowed_applicator(proba_v12_cumulative, window)
+        proba_v13_cumulative_windowed = windowed_applicator(proba_v13_cumulative, window)
+        proba_v14_cumulative_windowed = windowed_applicator(proba_v14_cumulative, window)
+        rdd = {
+            f"proba_v10_w{window}": proba_v10_cumulative_windowed,
+            f"proba_v11_w{window}": proba_v11_cumulative_windowed,
+            f"proba_v12_w{window}": proba_v12_cumulative_windowed,
+            f"proba_v13_w{window}": proba_v13_cumulative_windowed,
+            f"proba_v14_w{window}": proba_v14_cumulative_windowed,
+              }
+        results_dict.update(rdd)
     return results_dict
 
 concatenated_dataset = concatenated_dataset.map(map_fn)
