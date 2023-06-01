@@ -572,10 +572,10 @@ def get_dataloaders(args, accelerator, tokenizer, model):
         if args.fraction_dataset:
             total_fractions = args.n_dataset_fractions
             our_fraction = args.train_fraction_number
+            train_dataset = train_dataset.map(lambda e, i: e.update({"index" : i}) or e)
             train_dataset = train_dataset.shuffle(args.seed).flatten_indices()
             fraction_size = len(train_dataset)//total_fractions + 1
             train_dataset = train_dataset.select(range(our_fraction * fraction_size, min((our_fraction+1) * fraction_size, len(train_dataset) - 1)))
-            
 
     if args.token_weights:
         token_weights = Dataset.load_from_disk(args.token_weights)

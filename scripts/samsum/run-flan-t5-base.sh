@@ -1,9 +1,9 @@
-MODEL="t5-large"
-bs=4
-lr=2e-4
-weight_decay=0.01
+MODEL="google/flan-t5-base"
+bs=16
+lr=1e-3
+weight_decay=0.001
 dataset="samsum"
-gradient_accumulation_steps=8
+gradient_accumulation_steps=4
 baseline_epochs=10
 epochs=15
 combined_epochs=12
@@ -13,6 +13,7 @@ proba_dataset=outputs/${MODEL}/${dataset}/folds_${N_FOLDS}_combined
 proba_column="proba_w3"
 additional_args="--no_additional_args"
 seed=37
+
 
 scripts/run-baseline.sh ${MODEL} ${dataset} ${bs} ${gradient_accumulation_steps} ${baseline_epochs} ${num_warmup_steps} ${additional_args} ${lr} ${weight_decay} ${seed}
 scripts/run-fractional.sh ${MODEL} ${dataset} ${bs} ${gradient_accumulation_steps} ${epochs} ${num_warmup_steps} ${N_FOLDS} 0 ${additional_args} ${lr} ${weight_decay} ${seed}

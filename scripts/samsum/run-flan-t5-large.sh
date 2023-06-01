@@ -10,11 +10,10 @@ combined_epochs=13
 num_warmup_steps=180
 N_FOLDS=2
 proba_dataset=outputs/${MODEL}/${dataset}/folds_${N_FOLDS}_combined
-proba_column="proba_v11_cumulative_windowed"
+proba_column="proba_w3"
 additional_args="--no_additional_args"
 seed=42
 
-# "inverted_jsd" -> 8 epochs
 
 scripts/run-baseline.sh ${MODEL} ${dataset} ${bs} ${gradient_accumulation_steps} ${baseline_epochs} ${num_warmup_steps} ${additional_args} ${lr} ${weight_decay} ${seed}
 scripts/run-fractional.sh ${MODEL} ${dataset} ${bs} ${gradient_accumulation_steps} ${epochs} ${num_warmup_steps} ${N_FOLDS} 0 ${additional_args} ${lr} ${weight_decay} ${seed}

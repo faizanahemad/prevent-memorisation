@@ -41,7 +41,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --gradient_checkpointing_enable\
     --token_weights  $proba_dataset \
     --token_weights_column $proba_column \
-    --num_beams 5 \
+    --checkpointing_steps "epoch" \
     --max_source_length 512 --max_target_length 128\
     --seed $seed
     
