@@ -1,13 +1,13 @@
 MODEL="t5-base"
 bs=16
-lr=3e-4
+lr=2e-4
 weight_decay=0.001
 dataset="samsum"
 gradient_accumulation_steps=4
-baseline_epochs=10
+baseline_epochs=20
 epochs=15
 combined_epochs=12
-num_warmup_steps=240
+num_warmup_steps=180
 N_FOLDS=2
 proba_dataset=outputs/${MODEL}/${dataset}/folds_${N_FOLDS}_combined
 proba_column="proba_w3"
