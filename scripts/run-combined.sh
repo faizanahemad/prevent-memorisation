@@ -52,5 +52,6 @@ mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/${dataset}/fol
 mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
 mv outputs/${MODEL}/${dataset}/adapter_config.json outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
 mv outputs/${MODEL}/${dataset}/adapter_model.bin outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined
+mv outputs/${MODEL}/${dataset}/epoch_* outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined/
 
 # --load_model outputs/${MODEL}/${dataset}/folds_${N_FOLD}_${proba_column}_combined/model.pt \

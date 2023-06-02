@@ -38,6 +38,7 @@ CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --output_dir outputs/${MODEL}/${dataset} \
     --fsdp\
     --gradient_checkpointing_enable\
+    --checkpointing_steps "epoch" \
     --fraction_dataset --n_dataset_fractions $N_FOLD --train_fraction_number $FOLD \
     --max_source_length 512 --max_target_length 128\
     ${additional_args} \
@@ -50,6 +51,7 @@ mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/${dataset}/fol
 mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
 mv outputs/${MODEL}/${dataset}/adapter_config.json outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
 mv outputs/${MODEL}/${dataset}/adapter_model.bin outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
+mv outputs/${MODEL}/${dataset}/epoch_* outputs/${MODEL}/${dataset}/fold_${N_FOLD}_${FOLD}/
     
 CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" accelerate launch \
     --mixed_precision=bf16 --use_fsdp --fsdp_offload_params false --fsdp_auto_wrap_policy "TRANSFORMER_BASED_WRAP" --fsdp_sharding_strategy 1 --fsdp_transformer_layer_cls_to_wrap "T5Block" --fsdp_backward_prefetch_policy "BACKWARD_PRE" --fsdp_state_dict_type "FULL_STATE_DICT"\

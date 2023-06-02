@@ -48,3 +48,4 @@ mv outputs/${MODEL}/${dataset}/pytorch_model.bin outputs/${MODEL}/${dataset}/bas
 mv outputs/${MODEL}/${dataset}/log.txt outputs/${MODEL}/${dataset}/baseline
 mv outputs/${MODEL}/${dataset}/adapter_config.json outputs/${MODEL}/${dataset}/baseline
 mv outputs/${MODEL}/${dataset}/adapter_model.bin outputs/${MODEL}/${dataset}/baseline
+mv outputs/${MODEL}/${dataset}/epoch_* outputs/${MODEL}/${dataset}/baseline/

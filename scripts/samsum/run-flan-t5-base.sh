@@ -1,10 +1,10 @@
 MODEL="google/flan-t5-base"
 bs=16
-lr=1e-3
+lr=3e-4
 weight_decay=0.001
 dataset="samsum"
 gradient_accumulation_steps=4
-baseline_epochs=10
+baseline_epochs=12
 epochs=15
 combined_epochs=12
 num_warmup_steps=240
