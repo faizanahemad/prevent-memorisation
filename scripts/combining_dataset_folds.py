@@ -56,8 +56,8 @@ def map_fn(row):
         proba_cumulative = [np.power(np.min(d), (2/window)) for d in probas_cumulative]
         proba_mpd_cumulative = [np.power(np.min(d), (2/window))*(1 - (max_pairwise_distance(d))) for d in probas_cumulative]
         
-        proba_cumulative_windowed = windowed_applicator(proba_v10_cumulative, window)
-        proba_mpd_cumulative_windowed = windowed_applicator(proba_v11_cumulative, window)
+        proba_cumulative_windowed = windowed_applicator(proba_cumulative, window)
+        proba_mpd_cumulative_windowed = windowed_applicator(proba_mpd_cumulative, window)
         rdd = {
             f"proba_w{window}": proba_cumulative_windowed,
             f"proba_mpd_w{window}": proba_mpd_cumulative_windowed,
